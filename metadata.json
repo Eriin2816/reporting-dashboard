@@ -1,0 +1,8 @@
+{
+  "name": "Reporting Command Center",
+  "description": "A premium HubSpot-style key metrics and reporting dashboard for service businesses using GoHighLevel API V2.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
