@@ -833,7 +833,7 @@ var serverCacheMemory = {};
 function resolveGHLAuthentication(workspaceId) {
   const connection = db.getGHLConnection(workspaceId);
   if (!connection || !connection.apiKey) {
-    const envApiKey = process.env.GHL_PRIVATE_INTEGRATION_TOKEN || process.env.GHL_API_KEY || "";
+    const envApiKey = (process.env.GHL_PRIVATE_INTEGRATION_TOKEN || process.env.GHL_API_KEY || "").replace(/^﻿/, "");
     const envLocId = process.env.GHL_LOCATION_ID || "";
     if (!envApiKey) {
       throw new Error("NO_CREDENTIALS: GoHighLevel API credentials are not configured for this workspace.");
