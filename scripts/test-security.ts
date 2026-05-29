@@ -99,10 +99,11 @@ async function run() {
   // ─────────────────────────────────────────────
   await assert('T4  Cross-workspace switch blocked (pam cannot join ws_showtime)', async () => {
     const token = await login('pam@vancepools.com', 'Demo2026!');
+    // switch-workspace takes token in body (not header) alongside workspaceId
     const { status, body } = await apiCall('/api/auth/switch-workspace', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-auth-token': token },
-      body: JSON.stringify({ workspaceId: 'ws_showtime' })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, workspaceId: 'ws_showtime' })
     });
     if (status !== 403) {
       throw new Error(`Expected 403, got ${status}. Body: ${JSON.stringify(body)}`);
