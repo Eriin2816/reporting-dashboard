@@ -136,12 +136,14 @@ async function getOrCreateReportingSettings(workspaceId: string): Promise<Report
     .eq('workspace_id', workspaceId)
     .single();
   if (data) return toReportingSettings(data);
+  // Default to LIVE when REPORTING_DATA_SOURCE=live; MOCK is an explicit per-workspace opt-in
+  const defaultMode = process.env.REPORTING_DATA_SOURCE === 'live' ? 'LIVE' : 'MOCK';
   const defaults = {
     workspace_id: workspaceId,
     default_timeframe: 'last_30_days',
     allowed_dashboards: ['overview', 'opportunity', 'sales'],
     last_sync_at: null,
-    mode: 'MOCK',
+    mode: defaultMode,
     allow_admin_manage_ghl: true,
     cache_ttl_minutes: 15
   };
@@ -860,6 +862,7 @@ app.get('/api/ghl/metrics', requireAuth(), async (req: any, res) => {
   try {
     await syncGhlToMockDb(req.workspace.id);
     const result = await LiveReportingService.getOverviewDashboardReport(req.workspace.id);
+    if (!result.data) return res.status(503).json({ status: 'error', source: result.source, error: (result as any).error || 'Live data unavailable', warnings: result.warnings || [] });
     return res.json({ status: 'success', source: result.source, stale: !!result.stale, warnings: result.warnings || [], data: result.data });
   } catch (err: any) { return res.status(500).json({ status: 'error', error: err.message }); }
 });
@@ -868,6 +871,7 @@ app.get('/api/ghl/owner-performance', requireAuth(), async (req: any, res) => {
   try {
     await syncGhlToMockDb(req.workspace.id);
     const result = await LiveReportingService.getOwnerDashboardReport(req.workspace.id);
+    if (!result.data) return res.status(503).json({ status: 'error', source: result.source, error: (result as any).error || 'Live data unavailable', warnings: result.warnings || [] });
     return res.json({ status: 'success', source: result.source, data: result.data.ownerBreakdown });
   } catch (err: any) { return res.status(500).json({ status: 'error', error: err.message }); }
 });
@@ -876,13 +880,14 @@ app.get('/api/ghl/marketing-performance', requireAuth(), async (req: any, res) =
   try {
     await syncGhlToMockDb(req.workspace.id);
     const result = await LiveReportingService.getMarketingDashboardReport(req.workspace.id);
+    if (!result.data) return res.status(503).json({ status: 'error', source: result.source, error: (result as any).error || 'Live data unavailable', warnings: result.warnings || [] });
     const rep = result.data;
     const formatted = Object.keys(rep.leadsBySource).map(src => {
       const leads = rep.leadsBySource[src] || 0;
       const bookings = rep.bookingsBySource[src] || 0;
       const wonVal = rep.wonRevenueBySource[src] || 0;
       const pip = rep.pipelineValueBySource[src] || 0;
-      return { source: src, leadsCount: leads, conversionRate: leads > 0 ? Math.round((bookings / leads) * 100) : 0, pipelineValue: pip, closedWonValue: wonVal, costEstimate: Math.round(leads * 15), roi: 450, weeklyLeadsTrend: [{ date: 'Wk 1', count: Math.round(leads * 0.2) }, { date: 'Wk 2', count: Math.round(leads * 0.3) }, { date: 'Wk 3', count: Math.round(leads * 0.5) }, { date: 'Wk 4', count: leads }] };
+      return { source: src, leadsCount: leads, conversionRate: leads > 0 ? Math.round((bookings / leads) * 100) : 0, pipelineValue: pip, closedWonValue: wonVal, costEstimate: 0, roi: 0, weeklyLeadsTrend: [{ date: 'Wk 1', count: Math.round(leads * 0.2) }, { date: 'Wk 2', count: Math.round(leads * 0.3) }, { date: 'Wk 3', count: Math.round(leads * 0.5) }, { date: 'Wk 4', count: leads }] };
     });
     return res.json({ status: 'success', source: result.source, data: formatted });
   } catch (err: any) { return res.status(500).json({ status: 'error', error: err.message }); }
@@ -901,6 +906,7 @@ app.get('/api/reporting/owner-performance', requireAuth(), async (req: any, res)
     if (endDate && !isValidDateString(endDate)) return res.status(400).json({ status: 'error', source: 'mock', generatedAt: new Date().toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: 'endDate must be YYYY-MM-DD.' });
     const result = await LiveReportingService.getOwnerDashboardReport(req.workspace.id, { startDate, endDate, userId, source, campaign });
     if (result.warnings) warnings.push(...result.warnings);
+    if (!result.data) return res.status(503).json({ status: 'error', source: result.source, generatedAt: new Date().toISOString(), stale: false, warnings, unavailableMetrics: ['all'], error: (result as any).error || 'Live data unavailable' });
     return res.status(200).json({ status: 'success', source: result.source, generatedAt: new Date().toISOString(), stale: !!result.stale, warnings, unavailableMetrics: result.unavailableMetrics || [], data: result.data });
   } catch (err: any) { return res.status(500).json({ status: 'error', source: 'mock', generatedAt: new Date().toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: err.message }); }
 });
@@ -932,6 +938,7 @@ app.get('/api/reporting/marketing-performance', requireAuth(), async (req: any, 
     if (source && source.toLowerCase().includes('tiktok')) warnings.push('TikTok ad accounts are not synced. Cost metrics are estimated.');
     const result = await LiveReportingService.getMarketingDashboardReport(req.workspace.id, { startDate, endDate, userId, source, campaign });
     if (result.warnings) warnings.push(...result.warnings);
+    if (!result.data) return res.status(503).json({ status: 'error', source: result.source, generatedAt: new Date().toISOString(), stale: false, warnings, unavailableMetrics: ['all'], error: (result as any).error || 'Live data unavailable' });
     return res.status(200).json({ status: 'success', source: result.source, generatedAt: new Date().toISOString(), stale: !!result.stale, warnings, unavailableMetrics: result.unavailableMetrics || [], data: result.data });
   } catch (err: any) { return res.status(500).json({ status: 'error', source: 'mock', generatedAt: new Date().toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: err.message }); }
 });

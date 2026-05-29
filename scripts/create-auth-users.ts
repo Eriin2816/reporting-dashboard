@@ -10,6 +10,14 @@ import * as path from 'path';
 
 dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
 
+// Safety guard: prevent accidental prod wipes without explicit confirmation flag
+if (!process.argv.includes('--confirm')) {
+  console.error('\n⛔  Seed scripts require explicit confirmation.');
+  console.error('    Run with --confirm flag:\n');
+  console.error('    npx tsx scripts/create-auth-users.ts --confirm\n');
+  process.exit(1);
+}
+
 const SUPABASE_URL = process.env.SUPABASE_URL!;
 const SERVICE_KEY  = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const DEMO_PW      = 'Demo2026!';

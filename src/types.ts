@@ -33,6 +33,7 @@ export interface GHLOpportunity {
   assignedTo: string; // User ID
   source: string;
   createdAt: string;
+  contactId?: string; // linked contact id (used for missedLeads computation)
 }
 
 export interface GHLAppointment {
@@ -41,6 +42,7 @@ export interface GHLAppointment {
   appointmentStatus: 'confirmed' | 'showed' | 'noshow' | 'cancelled';
   startTime: string;
   userId: string; // Assigned owner
+  contactId?: string; // linked contact id (for source attribution in marketing report)
 }
 
 export interface GHLConversation {
