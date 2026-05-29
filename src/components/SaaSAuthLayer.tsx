@@ -57,6 +57,7 @@ export default function SaaSAuthLayer({ children }: SaaSAuthLayerProps) {
   // Signup Form State
   const [signupName, setSignupName] = useState('');
   const [signupEmail, setSignupEmail] = useState('');
+  const [signupPassword, setSignupPassword] = useState('');
   const [signupSuccess, setSignupSuccess] = useState(false);
 
   // Forgot Password state
@@ -208,7 +209,7 @@ export default function SaaSAuthLayer({ children }: SaaSAuthLayerProps) {
       const response = await fetch('/api/auth/signup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: signupName, email: signupEmail })
+        body: JSON.stringify({ name: signupName, email: signupEmail, password: signupPassword })
       });
 
       const payload = await response.json();
@@ -871,6 +872,22 @@ export default function SaaSAuthLayer({ children }: SaaSAuthLayerProps) {
                     className="w-full text-xs p-3 pl-9 bg-white border border-slate-205 rounded-xl outline-none focus:border-blue-500 font-semibold"
                   />
                   <Mail className="absolute left-3 top-3.5 w-4 h-4 text-slate-400" />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-500 uppercase tracking-wider block">Create password</label>
+                <div className="relative">
+                  <input
+                    type="password"
+                    required
+                    minLength={6}
+                    placeholder="••••••••••••"
+                    value={signupPassword}
+                    onChange={(e) => setSignupPassword(e.target.value)}
+                    className="w-full text-xs p-3 pl-9 bg-white border border-slate-205 rounded-xl outline-none focus:border-blue-500 font-semibold"
+                  />
+                  <Lock className="absolute left-3 top-3.5 w-4 h-4 text-slate-400" />
                 </div>
               </div>
 
