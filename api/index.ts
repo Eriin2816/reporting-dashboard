@@ -1,6 +1,7 @@
 /**
  * Vercel serverless entry point — Express API routes backed by Supabase.
  * Sessions are stateless Supabase JWTs verified per-request (cold-start safe).
+ * Compiled as CJS: package.json has no "type":"module" field.
  */
 
 import express from 'express';
