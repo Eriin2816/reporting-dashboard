@@ -46,7 +46,8 @@ export function resolveGHLAuthentication(workspaceId: string): {
   const connection = db.getGHLConnection(workspaceId);
   if (!connection || !connection.apiKey) {
     // Use the correct Vercel env var name: GHL_PRIVATE_INTEGRATION_TOKEN
-    const envApiKey = process.env.GHL_PRIVATE_INTEGRATION_TOKEN || process.env.GHL_API_KEY || '';
+    // Strip BOM (U+FEFF, decimal 65279) that Windows text editors can prepend to copied values
+    const envApiKey = (process.env.GHL_PRIVATE_INTEGRATION_TOKEN || process.env.GHL_API_KEY || '').replace(/^﻿/, '');
     const envLocId = process.env.GHL_LOCATION_ID || '';
     if (!envApiKey) {
       throw new Error('NO_CREDENTIALS: GoHighLevel API credentials are not configured for this workspace.');
