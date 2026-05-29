@@ -1,9 +1,9 @@
 {
-  "buildCommand": "vite build",
+  "buildCommand": "vite build && npx esbuild _api_src/index.ts --bundle --platform=node --target=node20 --format=cjs --packages=external --outfile=api/index.js",
   "outputDirectory": "dist",
   "framework": null,
   "functions": {
-    "api/index.ts": {
+    "api/index.js": {
       "maxDuration": 30
     }
   },
