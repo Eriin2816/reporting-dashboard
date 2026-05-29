@@ -366,32 +366,54 @@ export async function getLiveCRMData(
       }
     })(),
 
-    // Task 3: Calendar Events (bounded by startTime/endTime — required by GHL)
+    // Task 3: Calendar Events
+    // GHL v2 calendars/events requires calendarId, userId, or groupId — locationId alone is not accepted.
+    // Fetch all calendars for the location first, then get events for each.
     (async () => {
       try {
-        const res = await fetchFromGHLAPI<{ events?: any[] }>(
-          `calendars/events?startTime=${startMs}&endTime=${endMs}&limit=100`, workspaceId
-        );
-        if (res.data?.events) {
-          appointments = res.data.events.map(e => ({
-            id: e.id,
-            title: e.title || 'Appointment',
-            appointmentStatus: mapAppointmentStatus(e.status || e.appointmentStatus || ''),
-            startTime: e.startTime || new Date().toISOString(),
-            userId: e.userId || '',
-            contactId: e.contactId || ''
-          }));
+        const calRes = await fetchFromGHLAPI<{ calendars?: { id: string }[] }>('calendars/', workspaceId);
+        const calendarIds = (calRes.data?.calendars || []).map(c => c.id).slice(0, 5); // max 5 calendars
+        if (calendarIds.length === 0) {
+          warnings.push('No calendars found for this location — appointment data unavailable.');
+          unavailableMetrics.push('bookedAppointments', 'showRate');
+          return;
         }
+        const allEvents: any[] = [];
+        await Promise.all(calendarIds.map(async calId => {
+          try {
+            const evRes = await fetchFromGHLAPI<{ events?: any[] }>(
+              `calendars/events?calendarId=${encodeURIComponent(calId)}&startTime=${startMs}&endTime=${endMs}`, workspaceId
+            );
+            if (evRes.data?.events) allEvents.push(...evRes.data.events);
+          } catch { /* individual calendar failure is non-fatal */ }
+        }));
+        appointments = allEvents.map(e => ({
+          id: e.id,
+          title: e.title || 'Appointment',
+          appointmentStatus: mapAppointmentStatus(e.status || e.appointmentStatus || ''),
+          startTime: e.startTime || new Date().toISOString(),
+          userId: e.userId || '',
+          contactId: e.contactId || ''
+        }));
       } catch (err: any) {
-        warnings.push(`Calendar events unavailable: ${err.message}`);
+        warnings.push(`Calendar appointments unavailable: ${err.message}`);
         unavailableMetrics.push('bookedAppointments', 'showRate');
       }
     })(),
 
-    // Task 4: Sub-account users (correct endpoint: users/search)
+    // Task 4: Sub-account users
+    // GHL v2 users/search requires companyId (set GHL_COMPANY_ID env var).
     (async () => {
       try {
-        const res = await fetchFromGHLAPI<{ users?: any[] }>('users/search', workspaceId);
+        const companyId = process.env.GHL_COMPANY_ID || '';
+        if (!companyId) {
+          warnings.push('GHL_COMPANY_ID not configured — team roster unavailable.');
+          unavailableMetrics.push('teamRoster', 'perRepBreakdown');
+          return;
+        }
+        const res = await fetchFromGHLAPI<{ users?: any[] }>(
+          `users/search?companyId=${encodeURIComponent(companyId)}`, workspaceId
+        );
         if (res.data?.users) {
           users = res.data.users.map(u => ({
             id: u.id,

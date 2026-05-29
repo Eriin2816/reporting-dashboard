@@ -11,7 +11,7 @@ import {
   getMarketingPerformanceReport
 } from '../src/mockReportingData.js';
 import { LiveReportingService, invalidateWorkspaceCacheStore } from '../src/ghlService.js';
-import { supabaseAdmin } from '../src/supabase.js';
+import { supabaseAdmin, supabaseSignIn } from '../src/supabase.js';
 
 import dotenv from 'dotenv';
 dotenv.config();
@@ -392,13 +392,18 @@ app.post('/api/auth/login', async (req, res) => {
     loginPassword = password || '';
   }
 
-  const { data, error } = await supabaseAdmin.auth.signInWithPassword({ email: loginEmail, password: loginPassword });
-  if (error || !data.session) {
+  // Use direct REST sign-in — never call supabaseAdmin.auth.signInWithPassword()
+  // as it mutates the singleton's session and breaks all subsequent .from() queries.
+  const signInResult = await supabaseSignIn(loginEmail, loginPassword);
+  if (signInResult.error || !signInResult.accessToken) {
     return res.status(401).json({ status: 'error', error: 'Invalid credentials. Check your email and password.' });
   }
 
-  const authUser = data.user;
-  const sessionToken = data.session.access_token;
+  const { data: { user: authUser }, error: getUserError } = await supabaseAdmin.auth.admin.getUserById(signInResult.userId!);
+  if (getUserError || !authUser) {
+    return res.status(401).json({ status: 'error', error: 'Authentication failed. Please try again.' });
+  }
+  const sessionToken = signInResult.accessToken;
 
   const profile = await getProfile(authUser.id);
   const user = toSaaSUser(authUser, profile);
@@ -444,12 +449,12 @@ app.post('/api/auth/signup', async (req, res) => {
 
   await supabaseAdmin.from('profiles').insert({ id: newUser.user.id, name, onboarded: false });
 
-  const { data: signInData, error: signInError } = await supabaseAdmin.auth.signInWithPassword({ email, password });
-  if (signInError || !signInData.session) {
+  const signInResult = await supabaseSignIn(email, password);
+  if (signInResult.error || !signInResult.accessToken) {
     return res.status(500).json({ status: 'error', error: 'Account created but auto sign-in failed. Please log in manually.' });
   }
 
-  const token = signInData.session.access_token;
+  const token = signInResult.accessToken;
   const user = toSaaSUser(newUser.user, { name, onboarded: false });
   res.json({ status: 'success', user, token });
 });
