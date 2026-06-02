@@ -26,7 +26,9 @@ import {
   Shield,
   CreditCard,
   Building,
-  PowerOff
+  PowerOff,
+  Menu,
+  X
 } from 'lucide-react';
 
 import { 
@@ -61,6 +63,8 @@ const initialMetrics: DashboardMetrics = {
 
 function AppCockpit({ user, activeWorkspace, role, workspaces, token, logout, triggerRefresh, switchWorkspace }: any) {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'opportunity-dashboard' | 'sales-dashboard' | 'appointment-dashboard' | 'marketing-dashboard' | 'estimates-dashboard' | 'ghl-settings' | 'settings' | 'admin' | 'billing'>('dashboard');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const navigate = (tab: typeof activeTab) => { setActiveTab(tab); setSidebarOpen(false); };
   
   // Dashboard states
   const [metrics, setMetrics] = useState<DashboardMetrics>(initialMetrics);
@@ -247,19 +251,29 @@ function AppCockpit({ user, activeWorkspace, role, workspaces, token, logout, tr
   };
 
   return (
-    <div className="min-h-screen bg-[#f1f5f9] text-slate-900 flex flex-col md:flex-row antialiased font-sans">
-      
+    <div className="min-h-screen bg-[#f1f5f9] text-slate-900 flex antialiased font-sans">
+
+      {/* Mobile overlay backdrop */}
+      <div
+        className={`fixed inset-0 bg-black/60 z-20 md:hidden transition-opacity duration-200 ${sidebarOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}
+        onClick={() => setSidebarOpen(false)}
+        aria-hidden="true"
+      />
+
       {/* 1. SIDEBAR NAVIGATION */}
-      <aside className="w-full md:w-64 bg-[#0a1424] text-white border-r border-[#1e2a3b] shrink-0 flex flex-col justify-between" id="control-center-sidebar">
+      <aside
+        id="control-center-sidebar"
+        className={`fixed md:sticky md:top-0 inset-y-0 left-0 z-30 md:z-auto h-screen w-64 bg-[#0a1424] text-white border-r border-[#1e2a3b] shrink-0 flex flex-col justify-between transition-transform duration-200 ease-in-out ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}
+      >
         
         {/* Upper Sidebar Items */}
         <div className="p-5 space-y-6">
           {/* Main Title Badge with personalized user context branding */}
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center font-black text-sm text-white shadow-md shadow-blue-500/20">
+            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center font-black text-sm text-white shadow-md shadow-blue-500/20 shrink-0">
               ST
             </div>
-            <div>
+            <div className="flex-1 min-w-0">
               <h1 className="text-xs font-black tracking-wider text-white uppercase leading-none">
                 HighLevel Command
               </h1>
@@ -267,6 +281,13 @@ function AppCockpit({ user, activeWorkspace, role, workspaces, token, logout, tr
                 SOLUTIONS SUITE
               </span>
             </div>
+            <button
+              className="md:hidden p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700 transition cursor-pointer shrink-0"
+              onClick={() => setSidebarOpen(false)}
+              aria-label="Close menu"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
 
           {/* Current Connected Location Account */}
@@ -305,7 +326,7 @@ function AppCockpit({ user, activeWorkspace, role, workspaces, token, logout, tr
 
             {/* General Dashboard */}
             <button
-              onClick={() => setActiveTab('dashboard')}
+              onClick={() => navigate('dashboard')}
               id="nav-btn-dashboard"
               className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-bold transition-all text-left cursor-pointer ${
                 activeTab === 'dashboard'
@@ -319,7 +340,7 @@ function AppCockpit({ user, activeWorkspace, role, workspaces, token, logout, tr
 
             {/* Opportunity Dashboard */}
             <button
-              onClick={() => setActiveTab('opportunity-dashboard')}
+              onClick={() => navigate('opportunity-dashboard')}
               id="nav-btn-opportunity"
               className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-bold transition-all text-left cursor-pointer ${
                 activeTab === 'opportunity-dashboard'
@@ -333,7 +354,7 @@ function AppCockpit({ user, activeWorkspace, role, workspaces, token, logout, tr
 
             {/* Sales Dashboard */}
             <button
-              onClick={() => setActiveTab('sales-dashboard')}
+              onClick={() => navigate('sales-dashboard')}
               id="nav-btn-sales"
               className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-bold transition-all text-left cursor-pointer ${
                 activeTab === 'sales-dashboard'
@@ -347,7 +368,7 @@ function AppCockpit({ user, activeWorkspace, role, workspaces, token, logout, tr
 
             {/* Appointment Dashboard */}
             <button
-              onClick={() => setActiveTab('appointment-dashboard')}
+              onClick={() => navigate('appointment-dashboard')}
               id="nav-btn-appointment"
               className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-bold transition-all text-left cursor-pointer ${
                 activeTab === 'appointment-dashboard'
@@ -361,7 +382,7 @@ function AppCockpit({ user, activeWorkspace, role, workspaces, token, logout, tr
 
             {/* Marketing Dashboard */}
             <button
-              onClick={() => setActiveTab('marketing-dashboard')}
+              onClick={() => navigate('marketing-dashboard')}
               id="nav-btn-marketing"
               className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-bold transition-all text-left cursor-pointer ${
                 activeTab === 'marketing-dashboard'
@@ -375,7 +396,7 @@ function AppCockpit({ user, activeWorkspace, role, workspaces, token, logout, tr
 
             {/* Estimates & Invoices */}
             <button
-              onClick={() => setActiveTab('estimates-dashboard')}
+              onClick={() => navigate('estimates-dashboard')}
               id="nav-btn-estimates"
               className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-bold transition-all text-left cursor-pointer ${
                 activeTab === 'estimates-dashboard'
@@ -392,7 +413,7 @@ function AppCockpit({ user, activeWorkspace, role, workspaces, token, logout, tr
             
             {/* GHL V2 API Settings Link */}
             <button
-              onClick={() => setActiveTab('ghl-settings')}
+              onClick={() => navigate('ghl-settings')}
               id="nav-btn-ghl-setup"
               className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-bold transition-all text-left cursor-pointer ${
                 activeTab === 'ghl-settings'
@@ -406,7 +427,7 @@ function AppCockpit({ user, activeWorkspace, role, workspaces, token, logout, tr
 
             {/* Settings Link */}
             <button
-              onClick={() => setActiveTab('settings')}
+              onClick={() => navigate('settings')}
               id="nav-btn-settings"
               className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-bold transition-all text-left cursor-pointer ${
                 activeTab === 'settings'
@@ -423,7 +444,7 @@ function AppCockpit({ user, activeWorkspace, role, workspaces, token, logout, tr
 
             {/* Admin Link */}
             <button
-              onClick={() => setActiveTab('admin')}
+              onClick={() => navigate('admin')}
               id="nav-btn-admin"
               className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-bold transition-all text-left cursor-pointer ${
                 activeTab === 'admin'
@@ -437,7 +458,7 @@ function AppCockpit({ user, activeWorkspace, role, workspaces, token, logout, tr
 
             {/* Billing Link */}
             <button
-              onClick={() => setActiveTab('billing')}
+              onClick={() => navigate('billing')}
               id="nav-btn-billing"
               className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-bold transition-all text-left cursor-pointer ${
                 activeTab === 'billing'
@@ -477,11 +498,19 @@ function AppCockpit({ user, activeWorkspace, role, workspaces, token, logout, tr
       </aside>
 
       {/* 2. MAIN HUB CANVAS */}
-      <main className="flex-1 flex flex-col min-w-0" id="main-content-hub">
+      <main className="flex-1 flex flex-col min-w-0 min-h-screen overflow-x-hidden" id="main-content-hub">
         
         {/* Global Hub Header bar */}
-        <header className="bg-white border-b border-slate-200 px-8 py-4.5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shrink-0 shadow-xs">
-          <div className="flex flex-wrap items-center gap-3">
+        <header className="bg-white border-b border-slate-200 px-4 md:px-8 py-4 flex flex-row items-center justify-between gap-3 shrink-0 shadow-xs">
+          {/* Hamburger — mobile only */}
+          <button
+            className="md:hidden p-2 rounded-lg text-slate-500 hover:bg-slate-100 transition cursor-pointer shrink-0"
+            onClick={() => setSidebarOpen(true)}
+            aria-label="Open menu"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+          <div className="flex flex-wrap items-center gap-3 flex-1 min-w-0">
             <h1 className="text-[#0F172A] font-extrabold text-sm tracking-tight pr-2">
               HighLevel Command Suite
             </h1>
