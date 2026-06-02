@@ -862,7 +862,7 @@ async function fetchFromGHLAPI(endpoint, workspaceId, options = {}) {
   const { authHeader, locationId } = authInfo;
   const baseUrl = process.env.GHL_BASE_URL || "https://services.leadconnectorhq.com";
   const apiVersion = process.env.GHL_API_VERSION || "2021-07-28";
-  const alreadyHasLocation = endpoint.includes("locationId=") || endpoint.includes("location_id=");
+  const alreadyHasLocation = endpoint.includes("locationId=") || endpoint.includes("location_id=") || endpoint.includes("altId=");
   const divider = endpoint.includes("?") ? "&" : "?";
   const fullUrl = `${baseUrl}/${endpoint}${locationId && !alreadyHasLocation ? `${divider}locationId=${locationId}` : ""}`;
   const headers = {
@@ -1429,10 +1429,11 @@ async function computeLiveMarketingReport(workspaceId, filters = {}) {
 function totalWon(opps) {
   return opps.filter((o) => o.status === "won").length;
 }
-async function fetchAllEstimates(workspaceId, opts = {}) {
+// GHL estimates/invoices require altId + altType=location (NOT locationId like contacts/opportunities)
+async function fetchAllEstimates(workspaceId, locationId, opts = {}) {
   const all = [];
   for (let page = 1; page <= 50; page++) {
-    const p = new URLSearchParams({ limit: "100", page: String(page) });
+    const p = new URLSearchParams({ altId: locationId, altType: "location", limit: "100", page: String(page) });
     if (opts.startDate) p.set("startDate", opts.startDate);
     if (opts.endDate) p.set("endDate", opts.endDate);
     const res = await fetchFromGHLAPI(`estimates/?${p}`, workspaceId);
@@ -1442,10 +1443,10 @@ async function fetchAllEstimates(workspaceId, opts = {}) {
   }
   return all;
 }
-async function fetchAllInvoicesGHL(workspaceId, opts = {}) {
+async function fetchAllInvoicesGHL(workspaceId, locationId, opts = {}) {
   const all = [];
   for (let page = 1; page <= 50; page++) {
-    const p = new URLSearchParams({ limit: "100", page: String(page) });
+    const p = new URLSearchParams({ altId: locationId, altType: "location", limit: "100", page: String(page) });
     if (opts.startDate) p.set("startDate", opts.startDate);
     if (opts.endDate) p.set("endDate", opts.endDate);
     const res = await fetchFromGHLAPI(`invoices/?${p}`, workspaceId);
@@ -1458,12 +1459,21 @@ async function fetchAllInvoicesGHL(workspaceId, opts = {}) {
 async function computeLiveEstimatesInvoicesReport(workspaceId, filters = {}) {
   const warnings = [];
   const unavailableMetrics = ["avgDaysToPayment"];
+  let locationId = "";
+  try { locationId = resolveGHLAuthentication(workspaceId).locationId; }
+  catch (err) { throw new Error(`AUTH_ERROR: ${err.message}`); }
+  if (!locationId) {
+    warnings.push("GHL Location ID not configured — estimates/invoices unavailable.");
+    unavailableMetrics.push("estimates", "invoices");
+  }
   let rawEstimates = [];
   let rawInvoices = [];
-  await Promise.all([
-    (async () => { try { rawEstimates = await fetchAllEstimates(workspaceId, filters); } catch (err) { warnings.push(`Estimates unavailable: ${err.message}`); unavailableMetrics.push("estimates"); } })(),
-    (async () => { try { rawInvoices = await fetchAllInvoicesGHL(workspaceId, filters); } catch (err) { warnings.push(`Invoices unavailable: ${err.message}`); unavailableMetrics.push("invoices"); } })()
-  ]);
+  if (locationId) {
+    await Promise.all([
+      (async () => { try { rawEstimates = await fetchAllEstimates(workspaceId, locationId, filters); } catch (err) { warnings.push(`Estimates unavailable: ${err.message}`); unavailableMetrics.push("estimates"); } })(),
+      (async () => { try { rawInvoices = await fetchAllInvoicesGHL(workspaceId, locationId, filters); } catch (err) { warnings.push(`Invoices unavailable: ${err.message}`); unavailableMetrics.push("invoices"); } })()
+    ]);
+  }
   const estByStatus = {};
   for (const e of rawEstimates) {
     const s = (e.status || "UNKNOWN").toUpperCase();
@@ -1874,6 +1884,103 @@ var LiveReportingService = class {
       }
       return { source: "live", data: null, warnings: [`Dev fallback: ${err.message}`], unavailableMetrics: [], stale: false };
     }
+  }
+};
+
+const PENDING_ESTIMATE_STATUSES = new Set(["SENT", "VIEWED"]);
+const UNPAID_INVOICE_STATUSES = new Set(["SENT", "PARTIAL", "OVERDUE"]);
+
+async function computeLiveOutstandingReport(workspaceId) {
+  const warnings = [];
+  const now = Date.now();
+  let locationId = "";
+  try { locationId = resolveGHLAuthentication(workspaceId).locationId; }
+  catch (err) { throw new Error(`AUTH_ERROR: ${err.message}`); }
+  let rawEstimates = [];
+  let rawInvoices = [];
+  if (locationId) {
+    await Promise.all([
+      (async () => { try { rawEstimates = await fetchAllEstimates(workspaceId, locationId, {}); } catch (err) { warnings.push(`Estimates unavailable: ${err.message}`); } })(),
+      (async () => { try { rawInvoices = await fetchAllInvoicesGHL(workspaceId, locationId, {}); } catch (err) { warnings.push(`Invoices unavailable: ${err.message}`); } })()
+    ]);
+  } else {
+    warnings.push("GHL Location ID not configured — outstanding data unavailable.");
+  }
+
+  function buildEstimateRecord(e) {
+    const sentDate = e.sentAt || e.updatedAt || e.createdAt || "";
+    const sentMs = sentDate ? new Date(sentDate).getTime() : null;
+    const contactName = e.contact ? (`${e.contact.firstName || ""} ${e.contact.lastName || ""}`.trim() || e.contact.email || "Unknown") : "Unknown";
+    return {
+      id: e.id || "", number: e.number || e.estimateNumber || "",
+      name: e.name || e.description || e.title || "",
+      contactName, contactEmail: e.contact?.email || "",
+      status: e.status || "UNKNOWN",
+      sentDate, amount: Number(e.total) || 0,
+      daysOutstanding: sentMs ? Math.max(0, Math.floor((now - sentMs) / 86400000)) : 0
+    };
+  }
+  function buildInvoiceRecord(i) {
+    const sentDate = i.sentAt || i.issueDate || i.updatedAt || i.createdAt || "";
+    const sentMs = sentDate ? new Date(sentDate).getTime() : null;
+    const contactName = i.contact ? (`${i.contact.firstName || ""} ${i.contact.lastName || ""}`.trim() || i.contact.email || "Unknown") : "Unknown";
+    return {
+      id: i.id || "", number: i.number || i.invoiceNumber || "",
+      name: i.name || i.description || "",
+      contactName, contactEmail: i.contact?.email || "",
+      status: i.status || "UNKNOWN",
+      sentDate, amount: Number(i.amountDue) || Number(i.total) || 0,
+      daysOutstanding: sentMs ? Math.max(0, Math.floor((now - sentMs) / 86400000)) : 0
+    };
+  }
+
+  const pendingEst = rawEstimates.filter(e => PENDING_ESTIMATE_STATUSES.has((e.status || "").toUpperCase())).map(buildEstimateRecord).sort((a, b) => b.daysOutstanding - a.daysOutstanding || b.amount - a.amount);
+  const unpaidInv = rawInvoices.filter(i => UNPAID_INVOICE_STATUSES.has((i.status || "").toUpperCase())).map(buildInvoiceRecord).sort((a, b) => b.daysOutstanding - a.daysOutstanding || b.amount - a.amount);
+
+  return {
+    data: {
+      pendingEstimates: { count: pendingEst.length, totalValue: pendingEst.reduce((s, r) => s + r.amount, 0), records: pendingEst },
+      unpaidInvoices: { count: unpaidInv.length, totalValue: unpaidInv.reduce((s, r) => s + r.amount, 0), records: unpaidInv },
+      fetchedAt: new Date().toISOString(), warnings
+    },
+    warnings
+  };
+}
+
+// Append getOutstandingReport to LiveReportingService prototype
+LiveReportingService.getOutstandingReport = async function(workspaceId) {
+  const settings = db.getReportingSettings(workspaceId);
+  if (settings.mode === "MOCK") {
+    const now = Date.now();
+    const d = (days) => new Date(now - days * 86400000).toISOString();
+    return {
+      source: "mock",
+      data: {
+        pendingEstimates: { count: 4, totalValue: 28500, records: [
+          { id: "est_001", number: "EST-001", name: "Pool Installation — Ross Residence", contactName: "Amanda Ross", contactEmail: "amanda.ross@email.com", status: "VIEWED", sentDate: d(18), amount: 12500, daysOutstanding: 18 },
+          { id: "est_002", number: "EST-002", name: "Spa Remodel — Donovan Corp", contactName: "Brian Donovan", contactEmail: "b.donovan@corp.com", status: "SENT", sentDate: d(7), amount: 8500, daysOutstanding: 7 },
+          { id: "est_003", number: "EST-003", name: "Pool Heater Upgrade — Reyes Family", contactName: "Carlos Reyes", contactEmail: "creyes@mail.com", status: "SENT", sentDate: d(32), amount: 4200, daysOutstanding: 32 },
+          { id: "est_004", number: "EST-004", name: "Inground Pool — Holloway Estate", contactName: "Diana Holloway", contactEmail: "diana.h@estate.com", status: "VIEWED", sentDate: d(45), amount: 3300, daysOutstanding: 45 }
+        ]},
+        unpaidInvoices: { count: 3, totalValue: 21800, records: [
+          { id: "inv_001", number: "INV-001", name: "Pool Service Contract Q2", contactName: "Amanda Ross", contactEmail: "amanda.ross@email.com", status: "OVERDUE", sentDate: d(65), amount: 9800, daysOutstanding: 65 },
+          { id: "inv_002", number: "INV-002", name: "Equipment Installation", contactName: "Brian Donovan", contactEmail: "b.donovan@corp.com", status: "PARTIAL", sentDate: d(28), amount: 7200, daysOutstanding: 28 },
+          { id: "inv_003", number: "INV-003", name: "Monthly Maintenance — May", contactName: "Carlos Reyes", contactEmail: "creyes@mail.com", status: "SENT", sentDate: d(12), amount: 4800, daysOutstanding: 12 }
+        ]},
+        fetchedAt: new Date().toISOString(), warnings: []
+      },
+      warnings: [], stale: false
+    };
+  }
+  const cached = getReportCache(workspaceId, "outstanding_alltime");
+  if (cached && !cached.stale) return { source: "live", data: cached.data, warnings: [], stale: false };
+  try {
+    const result = await computeLiveOutstandingReport(workspaceId);
+    setReportCache(workspaceId, "outstanding_alltime", result.data);
+    return { source: "live", data: result.data, warnings: result.warnings, stale: false };
+  } catch (err) {
+    console.error("[LiveReportingService] Outstanding failed:", err.message);
+    return { source: "live", data: null, error: err.message, warnings: [`Outstanding data unavailable: ${err.message}`], stale: false };
   }
 };
 
@@ -2807,6 +2914,15 @@ app.get("/api/reporting/estimates-invoices", requireAuth(), async (req, res) => 
     if (!result.data) return res.status(503).json({ status: "error", source: result.source, generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: false, warnings, unavailableMetrics: ["all"], error: result.error || "Live data unavailable" });
     return res.status(200).json({ status: "success", source: result.source, generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: !!result.stale, warnings, unavailableMetrics: result.unavailableMetrics || [], data: result.data });
   } catch (err) { return res.status(500).json({ status: "error", source: "mock", generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: err.message }); }
+});
+app.get("/api/reporting/outstanding", requireAuth(), async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  try {
+    await syncGhlToMockDb(req.workspace.id);
+    const result = await LiveReportingService.getOutstandingReport(req.workspace.id);
+    if (!result.data) return res.status(503).json({ status: "error", source: result.source, generatedAt: new Date().toISOString(), stale: false, warnings: result.warnings || [], error: result.error || "Live data unavailable" });
+    return res.status(200).json({ status: "success", source: result.source, generatedAt: new Date().toISOString(), stale: !!result.stale, warnings: result.warnings || [], data: result.data });
+  } catch (err) { return res.status(500).json({ status: "error", source: "mock", generatedAt: new Date().toISOString(), stale: false, warnings: [], error: err.message }); }
 });
 app.get("/api/reporting/appointment-performance", requireAuth(), async (req, res) => {
   try {

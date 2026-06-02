@@ -14,6 +14,8 @@ import {
   MarketingPerformanceReport,
   AppointmentDashboardReport,
   EstimatesInvoicesReport,
+  OutstandingReport,
+  OutstandingRecord,
   TrendChartPoint,
   FunnelStage
 } from './types.js';
@@ -91,8 +93,9 @@ export async function fetchFromGHLAPI<T>(
   const baseUrl = process.env.GHL_BASE_URL || 'https://services.leadconnectorhq.com';
   const apiVersion = process.env.GHL_API_VERSION || '2021-07-28';
 
-  // Don't double-append locationId when the endpoint already carries it (e.g. opportunities uses location_id)
-  const alreadyHasLocation = endpoint.includes('locationId=') || endpoint.includes('location_id=');
+  // Don't double-append locationId when the endpoint already carries it
+  // altId= is used by estimates/invoices endpoints (different GHL param name)
+  const alreadyHasLocation = endpoint.includes('locationId=') || endpoint.includes('location_id=') || endpoint.includes('altId=');
   const divider = endpoint.includes('?') ? '&' : '?';
   const fullUrl = `${baseUrl}/${endpoint}${(locationId && !alreadyHasLocation) ? `${divider}locationId=${locationId}` : ''}`;
 
@@ -957,10 +960,11 @@ export async function computeLiveAppointmentReport(
 // 8b. ESTIMATES & INVOICES FETCHERS + COMPUTE
 // ==========================================
 
-async function fetchAllEstimates(workspaceId: string, opts: { startDate?: string; endDate?: string } = {}): Promise<any[]> {
+// GHL estimates/invoices use altId + altType=location (NOT locationId like contacts/opportunities)
+async function fetchAllEstimates(workspaceId: string, locationId: string, opts: { startDate?: string; endDate?: string } = {}): Promise<any[]> {
   const all: any[] = [];
   for (let page = 1; page <= 50; page++) {
-    const p = new URLSearchParams({ limit: '100', page: String(page) });
+    const p = new URLSearchParams({ altId: locationId, altType: 'location', limit: '100', page: String(page) });
     if (opts.startDate) p.set('startDate', opts.startDate);
     if (opts.endDate) p.set('endDate', opts.endDate);
     const res = await fetchFromGHLAPI<{ estimates?: any[]; meta?: { nextPage?: number | null } }>(
@@ -973,10 +977,10 @@ async function fetchAllEstimates(workspaceId: string, opts: { startDate?: string
   return all;
 }
 
-async function fetchAllInvoices(workspaceId: string, opts: { startDate?: string; endDate?: string } = {}): Promise<any[]> {
+async function fetchAllInvoices(workspaceId: string, locationId: string, opts: { startDate?: string; endDate?: string } = {}): Promise<any[]> {
   const all: any[] = [];
   for (let page = 1; page <= 50; page++) {
-    const p = new URLSearchParams({ limit: '100', page: String(page) });
+    const p = new URLSearchParams({ altId: locationId, altType: 'location', limit: '100', page: String(page) });
     if (opts.startDate) p.set('startDate', opts.startDate);
     if (opts.endDate) p.set('endDate', opts.endDate);
     const res = await fetchFromGHLAPI<{ invoices?: any[]; meta?: { nextPage?: number | null } }>(
@@ -996,19 +1000,33 @@ export async function computeLiveEstimatesInvoicesReport(
   const warnings: string[] = [];
   const unavailableMetrics: string[] = ['avgDaysToPayment']; // GHL does not expose paidAt timestamp
 
+  // Resolve locationId once — estimates/invoices need altId=locationId&altType=location
+  let locationId = '';
+  try {
+    locationId = resolveGHLAuthentication(workspaceId).locationId;
+  } catch (err: any) {
+    throw new Error(`AUTH_ERROR: ${err.message}`);
+  }
+  if (!locationId) {
+    warnings.push('GHL Location ID not configured — estimates/invoices unavailable.');
+    unavailableMetrics.push('estimates', 'invoices');
+  }
+
   let rawEstimates: any[] = [];
   let rawInvoices: any[] = [];
 
-  await Promise.all([
-    (async () => {
-      try { rawEstimates = await fetchAllEstimates(workspaceId, filters); }
-      catch (err: any) { warnings.push(`Estimates unavailable: ${err.message}`); unavailableMetrics.push('estimates'); }
-    })(),
-    (async () => {
-      try { rawInvoices = await fetchAllInvoices(workspaceId, filters); }
-      catch (err: any) { warnings.push(`Invoices unavailable: ${err.message}`); unavailableMetrics.push('invoices'); }
-    })()
-  ]);
+  if (locationId) {
+    await Promise.all([
+      (async () => {
+        try { rawEstimates = await fetchAllEstimates(workspaceId, locationId, filters); }
+        catch (err: any) { warnings.push(`Estimates unavailable: ${err.message}`); unavailableMetrics.push('estimates'); }
+      })(),
+      (async () => {
+        try { rawInvoices = await fetchAllInvoices(workspaceId, locationId, filters); }
+        catch (err: any) { warnings.push(`Invoices unavailable: ${err.message}`); unavailableMetrics.push('invoices'); }
+      })()
+    ]);
+  }
 
   // ── ESTIMATES ──────────────────────────────────────────────
   const estByStatus: Record<string, { count: number; value: number }> = {};
@@ -1127,6 +1145,109 @@ export async function computeLiveEstimatesInvoicesReport(
   };
 
   return { data: report, warnings, unavailableMetrics };
+}
+
+// ==========================================
+// 8c. OUTSTANDING REPORT (ALL-TIME, NO DATE FILTER)
+// ==========================================
+
+const PENDING_ESTIMATE_STATUSES = new Set(['SENT', 'VIEWED']);
+const UNPAID_INVOICE_STATUSES   = new Set(['SENT', 'PARTIAL', 'OVERDUE']);
+
+export async function computeLiveOutstandingReport(workspaceId: string): Promise<{ data: OutstandingReport; warnings: string[] }> {
+  const warnings: string[] = [];
+  const now = Date.now();
+
+  let locationId = '';
+  try {
+    locationId = resolveGHLAuthentication(workspaceId).locationId;
+  } catch (err: any) {
+    throw new Error(`AUTH_ERROR: ${err.message}`);
+  }
+
+  let rawEstimates: any[] = [];
+  let rawInvoices: any[] = [];
+
+  if (locationId) {
+    await Promise.all([
+      (async () => {
+        try { rawEstimates = await fetchAllEstimates(workspaceId, locationId, {}); }
+        catch (err: any) { warnings.push(`Estimates unavailable: ${err.message}`); }
+      })(),
+      (async () => {
+        try { rawInvoices = await fetchAllInvoices(workspaceId, locationId, {}); }
+        catch (err: any) { warnings.push(`Invoices unavailable: ${err.message}`); }
+      })()
+    ]);
+  } else {
+    warnings.push('GHL Location ID not configured — outstanding data unavailable.');
+  }
+
+  function buildEstimateRecord(e: any): OutstandingRecord {
+    const sentDate = e.sentAt || e.updatedAt || e.createdAt || '';
+    const sentMs = sentDate ? new Date(sentDate).getTime() : null;
+    const contactName = e.contact
+      ? (`${e.contact.firstName || ''} ${e.contact.lastName || ''}`.trim() || e.contact.email || 'Unknown')
+      : (e.contactName || 'Unknown');
+    return {
+      id: e.id || '',
+      number: e.estimateNumber || e.number || e.id || '',
+      name: e.name || e.title || e.subject || '',
+      contactName,
+      contactEmail: e.contact?.email || e.contactEmail || '',
+      status: e.status || '',
+      sentDate,
+      amount: Number(e.total) || 0,
+      daysOutstanding: sentMs ? Math.max(0, Math.floor((now - sentMs) / 86400000)) : 0
+    };
+  }
+
+  function buildInvoiceRecord(i: any): OutstandingRecord {
+    const sentDate = i.sentAt || i.issueDate || i.updatedAt || i.createdAt || '';
+    const sentMs = sentDate ? new Date(sentDate).getTime() : null;
+    const contactName = i.contact
+      ? (`${i.contact.firstName || ''} ${i.contact.lastName || ''}`.trim() || i.contact.email || 'Unknown')
+      : 'Unknown';
+    return {
+      id: i.id || '',
+      number: i.invoiceNumber || i.number || i.id || '',
+      name: i.name || i.title || i.description || '',
+      contactName,
+      contactEmail: i.contact?.email || '',
+      status: i.status || '',
+      sentDate,
+      amount: Number(i.amountDue) || 0,
+      daysOutstanding: sentMs ? Math.max(0, Math.floor((now - sentMs) / 86400000)) : 0
+    };
+  }
+
+  const pendingEstimateRecords = rawEstimates
+    .filter(e => PENDING_ESTIMATE_STATUSES.has((e.status || '').toUpperCase()))
+    .map(buildEstimateRecord)
+    .sort((a, b) => b.daysOutstanding - a.daysOutstanding || b.amount - a.amount);
+
+  const unpaidInvoiceRecords = rawInvoices
+    .filter(i => UNPAID_INVOICE_STATUSES.has((i.status || '').toUpperCase()))
+    .map(buildInvoiceRecord)
+    .sort((a, b) => b.daysOutstanding - a.daysOutstanding || b.amount - a.amount);
+
+  return {
+    data: {
+      pendingEstimates: {
+        count: pendingEstimateRecords.length,
+        totalValue: pendingEstimateRecords.reduce((s, r) => s + r.amount, 0),
+        records: pendingEstimateRecords
+      },
+      unpaidInvoices: {
+        count: unpaidInvoiceRecords.length,
+        totalValue: unpaidInvoiceRecords.reduce((s, r) => s + r.amount, 0),
+        records: unpaidInvoiceRecords
+      },
+      fetchedAt: new Date().toISOString(),
+      warnings
+    },
+    warnings
+  };
 }
 
 // ==========================================
@@ -1415,6 +1536,63 @@ export class LiveReportingService {
         return { source: 'live' as const, data: null as any, error: err.message, warnings: [`Live data unavailable: ${err.message}`], unavailableMetrics: ['all'] as string[], stale: false };
       }
       return { source: 'live' as const, data: null as any, warnings: [`Dev fallback: ${err.message}`], unavailableMetrics: [] as string[], stale: false };
+    }
+  }
+
+  static async getOutstandingReport(workspaceId: string) {
+    const isProd = process.env.NODE_ENV === 'production';
+    const settings = db.getReportingSettings(workspaceId);
+
+    if (settings.mode === 'MOCK') {
+      const d = (daysAgo: number) => new Date(Date.now() - daysAgo * 86400000).toISOString();
+      return {
+        source: 'mock' as const,
+        data: {
+          pendingEstimates: {
+            count: 4,
+            totalValue: 89200,
+            records: [
+              { id: 'est_m1', number: 'EST-0022', name: 'Pool Renovation Package',       contactName: 'Brian & Lisa Whitmore', contactEmail: 'whitmore@email.com',    status: 'SENT',   sentDate: d(45), amount: 28500, daysOutstanding: 45 },
+              { id: 'est_m2', number: 'EST-0024', name: 'Equipment Upgrade Quote',        contactName: 'Sunrise Properties',    contactEmail: 'ops@sunrise.com',       status: 'VIEWED', sentDate: d(28), amount: 14200, daysOutstanding: 28 },
+              { id: 'est_m3', number: 'EST-0025', name: 'Spa & Water Feature Install',    contactName: 'Martinez Family',       contactEmail: 'martinez@gmail.com',    status: 'SENT',   sentDate: d(12), amount: 31800, daysOutstanding: 12 },
+              { id: 'est_m4', number: 'EST-0026', name: 'Annual Service Plan',            contactName: 'Valley Club HOA',       contactEmail: 'admin@valleyclub.org',  status: 'VIEWED', sentDate: d(6),  amount: 14700, daysOutstanding: 6  },
+            ] as OutstandingRecord[]
+          },
+          unpaidInvoices: {
+            count: 5,
+            totalValue: 112450,
+            records: [
+              { id: 'inv_o1', number: 'INV-0041', name: 'Inground Pool Construction',    contactName: 'James & Amanda Holloway', contactEmail: 'holloway@email.com',    status: 'OVERDUE', sentDate: d(105), amount: 18200, daysOutstanding: 105 },
+              { id: 'inv_o2', number: 'INV-0038', name: 'Pool Renovation & Tile Work',   contactName: 'Westside Properties LLC', contactEmail: 'billing@westside.com',  status: 'OVERDUE', sentDate: d(75),  amount: 14800, daysOutstanding: 75  },
+              { id: 'inv_o3', number: 'INV-0043', name: 'Pool Deck & Coping Work',       contactName: 'Rivera Family Trust',    contactEmail: 'rivera@email.com',      status: 'PARTIAL', sentDate: d(45),  amount: 8750,  daysOutstanding: 45  },
+              { id: 'inv_o4', number: 'INV-0046', name: 'Leak Detection & Repair',       contactName: 'Davidson Properties',    contactEmail: 'davidson@prop.net',     status: 'PARTIAL', sentDate: d(18),  amount: 14500, daysOutstanding: 18  },
+              { id: 'inv_o5', number: 'INV-0047', name: 'Pool Cleaning Annual Plan',     contactName: 'Henderson Household',    contactEmail: 'henderson@mail.com',    status: 'SENT',    sentDate: d(25),  amount: 56200, daysOutstanding: 25  },
+            ] as OutstandingRecord[]
+          },
+          fetchedAt: new Date().toISOString(),
+          warnings: [] as string[]
+        } as OutstandingReport,
+        warnings: [] as string[],
+        stale: false
+      };
+    }
+
+    const cacheKey = 'outstanding_alltime';
+    const cached = getReportCache<OutstandingReport>(workspaceId, cacheKey);
+    if (cached && !cached.stale) {
+      return { source: 'live' as const, data: cached.data, warnings: [] as string[], stale: false };
+    }
+
+    try {
+      const result = await computeLiveOutstandingReport(workspaceId);
+      setReportCache(workspaceId, cacheKey, result.data);
+      return { source: 'live' as const, data: result.data, warnings: result.warnings, stale: false };
+    } catch (err: any) {
+      console.error('[LiveReportingService] Outstanding failed:', err.message);
+      if (isProd) {
+        return { source: 'live' as const, data: null as any, error: err.message, warnings: [`Live data unavailable: ${err.message}`], stale: false };
+      }
+      return { source: 'live' as const, data: null as any, warnings: [`Dev fallback: ${err.message}`], stale: false };
     }
   }
 }
