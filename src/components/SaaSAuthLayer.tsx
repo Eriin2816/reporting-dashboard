@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Building2, 
-  ShieldCheck, 
-  Lock, 
+import {
+  Building2,
+  Lock,
   Unlock, 
   UserCheck, 
   ExternalLink, 
@@ -38,6 +37,12 @@ interface SaaSAuthLayerProps {
 }
 
 export default function SaaSAuthLayer({ children }: SaaSAuthLayerProps) {
+  // Detect iframe context safely (cross-origin access can throw)
+  const isInIframe = (() => { try { return window.self !== window.top; } catch { return true; } })();
+
+  // GHL SSO state: true while waiting for postMessage response (blocks login flash)
+  const [ghlSsoLoading, setGhlSsoLoading] = useState<boolean>(isInIframe);
+
   // Authentication & session state
   const [token, setToken] = useState<string>(() => localStorage.getItem('saas_token') || '');
   const [session, setSession] = useState<any>(null);
@@ -47,8 +52,8 @@ export default function SaaSAuthLayer({ children }: SaaSAuthLayerProps) {
 
   // Authentication page state navigation: 'login' | 'signup' | 'forgot' | 'onboarding' | 'app'
   const [page, setPage] = useState<'login' | 'signup' | 'forgot' | 'onboarding'>('login');
-  
-  // Login Form State
+
+  // Login Form State — ?email= query param is display hint only, never used as auth
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(true);
@@ -101,11 +106,8 @@ export default function SaaSAuthLayer({ children }: SaaSAuthLayerProps) {
         if (payload.status === 'success' && payload.session) {
           setSession(payload.session);
           setWorkspaces(payload.workspaces || []);
-          
           if (payload.session.user && !payload.session.user.onboarded) {
             setPage('onboarding');
-          } else {
-            // Unlocked
           }
         } else {
           logout();
@@ -121,9 +123,47 @@ export default function SaaSAuthLayer({ children }: SaaSAuthLayerProps) {
     }
   };
 
+  // Wait for SSO to settle before verifying the session (prevents login-form flash)
   useEffect(() => {
+    if (ghlSsoLoading) return;
     verifySession(token);
-  }, [token, refreshTrigger]);
+  }, [token, refreshTrigger, ghlSsoLoading]);
+
+  // GHL Marketplace SSO — postMessage handshake (runs once on mount, iframe only)
+  useEffect(() => {
+    if (!isInIframe) return;
+
+    let settled = false;
+    const settle = () => { if (!settled) { settled = true; setGhlSsoLoading(false); } };
+    const timeout = setTimeout(settle, 3000); // 3-second fallback to normal login
+
+    const handler = async (event: MessageEvent) => {
+      if (event.data?.message !== 'REQUEST_USER_DATA_RESPONSE') return;
+      if (settled) return;
+      clearTimeout(timeout);
+      try {
+        const res = await fetch('/api/ghl/sso', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ encryptedData: event.data.payload })
+        });
+        const data = await res.json();
+        if (data.status === 'success' && data.token) {
+          localStorage.setItem('saas_token', data.token);
+          setToken(data.token);
+        }
+      } catch (err) {
+        console.error('[GHL SSO]', err);
+      } finally {
+        settle();
+      }
+    };
+
+    window.addEventListener('message', handler);
+    window.parent.postMessage({ message: 'REQUEST_USER_DATA' }, '*');
+
+    return () => { window.removeEventListener('message', handler); clearTimeout(timeout); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const logout = () => {
     localStorage.removeItem('saas_token');
@@ -294,6 +334,16 @@ export default function SaaSAuthLayer({ children }: SaaSAuthLayerProps) {
     setRefreshTrigger(p => p + 1);
   };
 
+  // GHL SSO handshake in progress — show connecting screen, never flash login form
+  if (ghlSsoLoading) {
+    return (
+      <div className="min-h-screen bg-[#0b1424] flex flex-col items-center justify-center space-y-4">
+        <RefreshCw className="w-8 h-8 text-blue-400 animate-spin" />
+        <p className="text-xs text-slate-400 font-semibold uppercase tracking-widest">Connecting to GoHighLevel...</p>
+      </div>
+    );
+  }
+
   // If loading session, show standard microspinner
   if (loading && !session) {
     return (
@@ -391,44 +441,6 @@ export default function SaaSAuthLayer({ children }: SaaSAuthLayerProps) {
           switchWorkspace
         })}
 
-        {/* Global floating Playground Role Impersonator control drawer at bottom-right */}
-        <div className="fixed bottom-4 right-4 z-50 group font-sans">
-          <div className="bg-slate-900 text-white rounded-xl shadow-2xl border border-slate-800 p-3 max-w-[280px] w-full transition-all duration-300">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-2">
-              <span className="flex items-center gap-1.5 text-xs font-black tracking-wider text-blue-400">
-                <ShieldCheck className="w-3.5 h-3.5" />
-                SAAS PLAYGROUND
-              </span>
-              <span className="bg-blue-600 font-mono text-[8px] font-black px-1.5 py-0.5 rounded uppercase text-white animate-pulse">
-                Live Test
-              </span>
-            </div>
-            
-            <p className="text-[10px] text-slate-400 leading-normal mb-2.5 font-semibold">
-              Force-toggle your authenticated SaaS role context to evaluate database isolation instantly:
-            </p>
-
-            <select
-              value={playgroundUsers.find(pw => pw.email === session.user?.email)?.token || ''}
-              onChange={(e) => {
-                if (e.target.value) handlePlaygroundSign(e.target.value);
-              }}
-              className="w-full bg-slate-950 border border-slate-800 text-[10px] p-2 rounded-lg text-slate-200 outline-none focus:border-blue-500 font-bold"
-            >
-              <option value="" disabled>-- Impersonate Persona --</option>
-              {playgroundUsers.map((pu, idx) => (
-                <option key={idx} value={pu.token}>
-                  {pu.role.replace('WORKSPACE_', '')} ({pu.name.split(' (')[0]})
-                </option>
-              ))}
-            </select>
-
-            <div className="mt-2 text-[9px] text-slate-500 flex justify-between items-center font-mono font-medium">
-              <span>Active Tenant ID:</span>
-              <span className="bg-slate-950 px-1 py-0.5 text-blue-400 rounded font-black">{session.activeWorkspace?.id}</span>
-            </div>
-          </div>
-        </div>
       </>
     );
   }

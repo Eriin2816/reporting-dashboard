@@ -12,6 +12,8 @@ import {
   GHLConversation,
   OwnerPerformanceReport,
   MarketingPerformanceReport,
+  AppointmentDashboardReport,
+  EstimatesInvoicesReport,
   TrendChartPoint,
   FunnelStage
 } from './types.js';
@@ -241,7 +243,7 @@ async function fetchAllContacts(workspaceId: string): Promise<any[]> {
   const all: any[] = [];
   let startAfterId = '';
   let startAfter = '';
-  for (let page = 0; page < 10; page++) {
+  for (let page = 0; page < 50; page++) {
     const params: Record<string, string> = { limit: '100' };
     if (startAfterId) { params.startAfterId = startAfterId; params.startAfter = startAfter; }
     const res = await fetchFromGHLAPI<{ contacts?: any[]; meta?: { startAfterId?: string; startAfter?: string } }>(
@@ -767,6 +769,366 @@ function totalWon(opps: GHLOpportunity[]): number {
   return opps.filter(o => o.status === 'won').length;
 }
 
+export async function computeLiveAppointmentReport(
+  workspaceId: string,
+  filters: { startDate?: string; endDate?: string; userId?: string } = {}
+): Promise<{ data: AppointmentDashboardReport; warnings: string[]; unavailableMetrics: string[] }> {
+  const warnings: string[] = [];
+  const unavailableMetrics: string[] = [];
+
+  let locationId = '';
+  try {
+    const auth = resolveGHLAuthentication(workspaceId);
+    locationId = auth.locationId;
+  } catch (err: any) {
+    throw new Error(`AUTH_ERROR: ${err.message}`);
+  }
+
+  const now = Date.now();
+  const defaultMs = 30 * 24 * 60 * 60 * 1000;
+  const startMs = filters.startDate ? new Date(filters.startDate).getTime() : now - defaultMs;
+  const endMs = filters.endDate ? new Date(filters.endDate + 'T23:59:59.999Z').getTime() : now;
+
+  interface CalendarMeta { id: string; name: string; }
+  type RichAppointment = GHLAppointment & { calendarId: string; calendarName: string };
+  let allAppointments: RichAppointment[] = [];
+  let calendarMetas: CalendarMeta[] = [];
+
+  // Step 1: fetch calendars (capture name alongside id)
+  try {
+    const calRes = await fetchFromGHLAPI<{ calendars?: { id: string; name?: string }[] }>('calendars/', workspaceId);
+    calendarMetas = (calRes.data?.calendars || []).slice(0, 10).map(c => ({ id: c.id, name: c.name || c.id }));
+    if (calendarMetas.length === 0) {
+      warnings.push('No calendars found for this location — appointment data unavailable.');
+      unavailableMetrics.push('appointments');
+    } else {
+      // Step 2: fetch events per calendar in parallel
+      await Promise.all(calendarMetas.map(async cal => {
+        try {
+          const evRes = await fetchFromGHLAPI<{ events?: any[] }>(
+            `calendars/events?calendarId=${encodeURIComponent(cal.id)}&startTime=${startMs}&endTime=${endMs}`,
+            workspaceId
+          );
+          (evRes.data?.events || []).forEach(e => {
+            allAppointments.push({
+              id: e.id,
+              title: e.title || 'Appointment',
+              appointmentStatus: mapAppointmentStatus(e.appointmentStatus || e.status || ''),
+              startTime: e.startTime || new Date().toISOString(),
+              userId: e.userId || '',
+              contactId: e.contactId || '',
+              calendarId: cal.id,
+              calendarName: cal.name
+            });
+          });
+        } catch { /* individual calendar failure is non-fatal */ }
+      }));
+    }
+  } catch (err: any) {
+    warnings.push(`Calendar fetch failed: ${err.message}`);
+    unavailableMetrics.push('appointments');
+  }
+
+  // Step 3: fetch users for name lookup (best-effort — requires GHL_COMPANY_ID)
+  const userNameMap = new Map<string, string>();
+  try {
+    const companyId = process.env.GHL_COMPANY_ID || '';
+    if (companyId) {
+      const uRes = await fetchFromGHLAPI<{ users?: { id: string; firstName?: string; lastName?: string }[] }>(
+        `users/search?companyId=${encodeURIComponent(companyId)}`, workspaceId
+      );
+      (uRes.data?.users || []).forEach(u => {
+        userNameMap.set(u.id, `${u.firstName || ''} ${u.lastName || ''}`.trim() || u.id);
+      });
+    }
+  } catch { /* non-fatal */ }
+
+  // Apply userId filter
+  const filtered = filters.userId ? allAppointments.filter(a => a.userId === filters.userId) : allAppointments;
+
+  const showed = filtered.filter(a => a.appointmentStatus === 'showed').length;
+  const noshow = filtered.filter(a => a.appointmentStatus === 'noshow').length;
+  const cancelled = filtered.filter(a => a.appointmentStatus === 'cancelled').length;
+  const confirmed = filtered.filter(a => a.appointmentStatus === 'confirmed').length;
+  const total = filtered.length;
+  const upcoming = filtered.filter(a => new Date(a.startTime).getTime() > now).length;
+  const showDenom = showed + noshow;
+
+  // Calendar breakdown
+  const calMap = new Map<string, { name: string; total: number; showed: number; noshow: number; cancelled: number; confirmed: number }>();
+  filtered.forEach(a => {
+    const cur = calMap.get(a.calendarId) || { name: a.calendarName, total: 0, showed: 0, noshow: 0, cancelled: 0, confirmed: 0 };
+    cur.total++;
+    if (a.appointmentStatus === 'showed') cur.showed++;
+    else if (a.appointmentStatus === 'noshow') cur.noshow++;
+    else if (a.appointmentStatus === 'cancelled') cur.cancelled++;
+    else cur.confirmed++;
+    calMap.set(a.calendarId, cur);
+  });
+
+  // Rep breakdown
+  const repMap = new Map<string, { total: number; showed: number; noshow: number; cancelled: number }>();
+  filtered.forEach(a => {
+    const uid = a.userId || 'unknown';
+    const cur = repMap.get(uid) || { total: 0, showed: 0, noshow: 0, cancelled: 0 };
+    cur.total++;
+    if (a.appointmentStatus === 'showed') cur.showed++;
+    else if (a.appointmentStatus === 'noshow') cur.noshow++;
+    else if (a.appointmentStatus === 'cancelled') cur.cancelled++;
+    repMap.set(uid, cur);
+  });
+
+  // Trend bucketing
+  const seg = (endMs - startMs) / 4;
+  const tBuckets = [{ booked: 0, showed: 0, noshow: 0 }, { booked: 0, showed: 0, noshow: 0 }, { booked: 0, showed: 0, noshow: 0 }, { booked: 0, showed: 0, noshow: 0 }];
+  filtered.forEach(a => {
+    const t = new Date(a.startTime).getTime();
+    const idx = Math.min(3, Math.floor((t - startMs) / seg));
+    if (idx >= 0) {
+      tBuckets[idx].booked++;
+      if (a.appointmentStatus === 'showed') tBuckets[idx].showed++;
+      else if (a.appointmentStatus === 'noshow') tBuckets[idx].noshow++;
+    }
+  });
+
+  const report: AppointmentDashboardReport = {
+    summary: {
+      totalBooked: total,
+      totalShowed: showed,
+      totalNoShow: noshow,
+      totalCancelled: cancelled,
+      totalConfirmed: confirmed,
+      showRate: showDenom > 0 ? Math.round((showed / showDenom) * 100) : 0,
+      noShowRate: showDenom > 0 ? Math.round((noshow / showDenom) * 100) : 0,
+      cancellationRate: total > 0 ? Math.round((cancelled / total) * 100) : 0,
+      upcomingCount: upcoming
+    },
+    statusDistribution: [
+      { status: 'Showed', count: showed },
+      { status: 'No-Show', count: noshow },
+      { status: 'Cancelled', count: cancelled },
+      { status: 'Confirmed', count: confirmed }
+    ].filter(s => s.count > 0),
+    calendarBreakdown: Array.from(calMap.entries()).map(([calId, d]) => ({
+      calendarId: calId,
+      calendarName: d.name,
+      total: d.total,
+      showed: d.showed,
+      noshow: d.noshow,
+      cancelled: d.cancelled,
+      confirmed: d.confirmed,
+      showRate: (d.showed + d.noshow) > 0 ? Math.round((d.showed / (d.showed + d.noshow)) * 100) : 0
+    })),
+    repBreakdown: Array.from(repMap.entries()).map(([userId, d]) => ({
+      userId,
+      userName: userNameMap.get(userId) || userId,
+      booked: d.total,
+      showed: d.showed,
+      noshow: d.noshow,
+      cancelled: d.cancelled,
+      showRate: (d.showed + d.noshow) > 0 ? Math.round((d.showed / (d.showed + d.noshow)) * 100) : 0
+    })),
+    upcomingAppointments: filtered
+      .filter(a => new Date(a.startTime).getTime() > now)
+      .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime())
+      .slice(0, 15)
+      .map(a => ({
+        id: a.id,
+        title: a.title,
+        startTime: a.startTime,
+        status: a.appointmentStatus,
+        userId: a.userId,
+        userName: userNameMap.get(a.userId) || undefined,
+        calendarId: a.calendarId,
+        calendarName: a.calendarName
+      })),
+    trends: ['Wk 1', 'Wk 2', 'Wk 3', 'Wk 4'].map((date, i) => ({
+      date,
+      booked: tBuckets[i].booked,
+      showed: tBuckets[i].showed,
+      noshow: tBuckets[i].noshow
+    }))
+  };
+
+  return { data: report, warnings, unavailableMetrics };
+}
+
+// ==========================================
+// 8b. ESTIMATES & INVOICES FETCHERS + COMPUTE
+// ==========================================
+
+async function fetchAllEstimates(workspaceId: string, opts: { startDate?: string; endDate?: string } = {}): Promise<any[]> {
+  const all: any[] = [];
+  for (let page = 1; page <= 50; page++) {
+    const p = new URLSearchParams({ limit: '100', page: String(page) });
+    if (opts.startDate) p.set('startDate', opts.startDate);
+    if (opts.endDate) p.set('endDate', opts.endDate);
+    const res = await fetchFromGHLAPI<{ estimates?: any[]; meta?: { nextPage?: number | null } }>(
+      `estimates/?${p}`, workspaceId
+    );
+    const batch = res.data?.estimates ?? [];
+    all.push(...batch);
+    if (batch.length < 100 || !res.data?.meta?.nextPage) break;
+  }
+  return all;
+}
+
+async function fetchAllInvoices(workspaceId: string, opts: { startDate?: string; endDate?: string } = {}): Promise<any[]> {
+  const all: any[] = [];
+  for (let page = 1; page <= 50; page++) {
+    const p = new URLSearchParams({ limit: '100', page: String(page) });
+    if (opts.startDate) p.set('startDate', opts.startDate);
+    if (opts.endDate) p.set('endDate', opts.endDate);
+    const res = await fetchFromGHLAPI<{ invoices?: any[]; meta?: { nextPage?: number | null } }>(
+      `invoices/?${p}`, workspaceId
+    );
+    const batch = res.data?.invoices ?? [];
+    all.push(...batch);
+    if (batch.length < 100 || !res.data?.meta?.nextPage) break;
+  }
+  return all;
+}
+
+export async function computeLiveEstimatesInvoicesReport(
+  workspaceId: string,
+  filters: { startDate?: string; endDate?: string } = {}
+): Promise<{ data: EstimatesInvoicesReport; warnings: string[]; unavailableMetrics: string[] }> {
+  const warnings: string[] = [];
+  const unavailableMetrics: string[] = ['avgDaysToPayment']; // GHL does not expose paidAt timestamp
+
+  let rawEstimates: any[] = [];
+  let rawInvoices: any[] = [];
+
+  await Promise.all([
+    (async () => {
+      try { rawEstimates = await fetchAllEstimates(workspaceId, filters); }
+      catch (err: any) { warnings.push(`Estimates unavailable: ${err.message}`); unavailableMetrics.push('estimates'); }
+    })(),
+    (async () => {
+      try { rawInvoices = await fetchAllInvoices(workspaceId, filters); }
+      catch (err: any) { warnings.push(`Invoices unavailable: ${err.message}`); unavailableMetrics.push('invoices'); }
+    })()
+  ]);
+
+  // ── ESTIMATES ──────────────────────────────────────────────
+  const estByStatus: Record<string, { count: number; value: number }> = {};
+  for (const e of rawEstimates) {
+    const s = (e.status || 'UNKNOWN').toUpperCase();
+    if (!estByStatus[s]) estByStatus[s] = { count: 0, value: 0 };
+    estByStatus[s].count++;
+    estByStatus[s].value += Number(e.total) || 0;
+  }
+
+  const estSent = rawEstimates.filter(e => (e.status || '').toUpperCase() !== 'DRAFT');
+  const estSentCount = estSent.length;
+  const estSentValue = estSent.reduce((s, e) => s + (Number(e.total) || 0), 0);
+  // "Viewed" = any status that implies the client engaged (viewed the link)
+  const estViewed = rawEstimates.filter(e => ['VIEWED', 'ACCEPTED', 'REJECTED', 'CONVERTED'].includes((e.status || '').toUpperCase())).length;
+  const estAccepted = rawEstimates.filter(e => (e.status || '').toUpperCase() === 'ACCEPTED').length;
+  const estRejected = rawEstimates.filter(e => (e.status || '').toUpperCase() === 'REJECTED').length;
+  const estConverted = rawEstimates.filter(e => (e.status || '').toUpperCase() === 'CONVERTED').length;
+  const estExpired = rawEstimates.filter(e => (e.status || '').toUpperCase() === 'EXPIRED').length;
+
+  // ── INVOICES ──────────────────────────────────────────────
+  const invByStatus: Record<string, { count: number; value: number; amountPaid: number; amountDue: number }> = {};
+  for (const inv of rawInvoices) {
+    const s = (inv.status || 'UNKNOWN').toUpperCase();
+    if (!invByStatus[s]) invByStatus[s] = { count: 0, value: 0, amountPaid: 0, amountDue: 0 };
+    invByStatus[s].count++;
+    invByStatus[s].value += Number(inv.total) || 0;
+    invByStatus[s].amountPaid += Number(inv.amountPaid) || 0;
+    invByStatus[s].amountDue += Number(inv.amountDue) || 0;
+  }
+
+  // Exclude DRAFT and CANCELLED from revenue metrics
+  const invBillable = rawInvoices.filter(i => !['DRAFT', 'CANCELLED'].includes((i.status || '').toUpperCase()));
+  const invTotalValue = invBillable.reduce((s, i) => s + (Number(i.total) || 0), 0);
+  const invTotalPaid = rawInvoices.reduce((s, i) => s + (Number(i.amountPaid) || 0), 0);
+  const invTotalOutstanding = rawInvoices.reduce((s, i) => s + (Number(i.amountDue) || 0), 0);
+
+  // ── AGING + UNPAID LIST ────────────────────────────────────
+  const now = Date.now();
+  const aging = {
+    current:    { count: 0, value: 0 },
+    days1to30:  { count: 0, value: 0 },
+    days31to60: { count: 0, value: 0 },
+    days61plus: { count: 0, value: 0 }
+  };
+  const unpaidList: EstimatesInvoicesReport['invoices']['unpaidList'] = [];
+
+  for (const inv of rawInvoices) {
+    const amtDue = Number(inv.amountDue) || 0;
+    if (amtDue <= 0) continue;
+
+    const dueMs = inv.dueDate ? new Date(inv.dueDate).getTime() : null;
+    const daysOverdue = dueMs ? Math.max(0, Math.floor((now - dueMs) / 86400000)) : 0;
+    const notYetDue = !dueMs || dueMs > now;
+
+    if (notYetDue)            { aging.current.count++;    aging.current.value    += amtDue; }
+    else if (daysOverdue <= 30){ aging.days1to30.count++;  aging.days1to30.value  += amtDue; }
+    else if (daysOverdue <= 60){ aging.days31to60.count++; aging.days31to60.value += amtDue; }
+    else                       { aging.days61plus.count++; aging.days61plus.value += amtDue; }
+
+    const contactName = inv.contact
+      ? (`${inv.contact.firstName || ''} ${inv.contact.lastName || ''}`.trim() || inv.contact.email || 'Unknown')
+      : 'Unknown';
+
+    unpaidList.push({
+      id: inv.id,
+      invoiceNumber: inv.number || '',
+      name: inv.name || inv.description || '',
+      contactName,
+      contactEmail: inv.contact?.email || '',
+      amountDue: amtDue,
+      total: Number(inv.total) || 0,
+      dueDate: inv.dueDate || '',
+      issueDate: inv.issueDate || '',
+      daysOverdue,
+      status: inv.status || ''
+    });
+  }
+  unpaidList.sort((a, b) => b.daysOverdue - a.daysOverdue || b.amountDue - a.amountDue);
+
+  const report: EstimatesInvoicesReport = {
+    estimates: {
+      totalCount: rawEstimates.length,
+      totalValue: rawEstimates.reduce((s, e) => s + (Number(e.total) || 0), 0),
+      byStatus: estByStatus,
+      funnel: {
+        sent: estSentCount,
+        sentValue: estSentValue,
+        viewed: estViewed,
+        viewRate: estSentCount > 0 ? Math.round((estViewed / estSentCount) * 100) : 0,
+        accepted: estAccepted,
+        acceptanceRate: estSentCount > 0 ? Math.round((estAccepted / estSentCount) * 100) : 0,
+        rejected: estRejected,
+        rejectionRate: estSentCount > 0 ? Math.round((estRejected / estSentCount) * 100) : 0,
+        converted: estConverted,
+        conversionRate: estSentCount > 0 ? Math.round((estConverted / estSentCount) * 100) : 0,
+        expired: estExpired
+      }
+    },
+    invoices: {
+      totalCount: rawInvoices.length,
+      totalValue: invTotalValue,
+      totalPaid: invTotalPaid,
+      totalOutstanding: invTotalOutstanding,
+      collectionRate: invTotalValue > 0 ? Math.round((invTotalPaid / invTotalValue) * 100) : 0,
+      avgInvoiceValue: invBillable.length > 0 ? Math.round(invTotalValue / invBillable.length) : 0,
+      byStatus: invByStatus,
+      aging,
+      unpaidList
+    },
+    crossMetrics: {
+      estimateToInvoiceRate: estSentCount > 0 ? Math.round((estConverted / estSentCount) * 100) : 0
+    },
+    warnings,
+    unavailableMetrics
+  };
+
+  return { data: report, warnings, unavailableMetrics };
+}
+
 // ==========================================
 // 9. LIVE REPORTING SERVICE DISPATCHER
 // ==========================================
@@ -781,14 +1143,14 @@ export class LiveReportingService {
       return { source: 'mock' as const, data: getMockDashboardMetrics(), warnings: [] as string[], unavailableMetrics: [] as string[], stale: false };
     }
 
-    const cached = getReportCache<any>(workspaceId, 'overview');
+    const cached = getReportCache<any>(workspaceId, `overview_${filters.startDate||''}_${filters.endDate||''}`);
     if (cached && !cached.stale) {
       return { source: 'live' as const, data: cached.data, warnings: [] as string[], unavailableMetrics: [] as string[], stale: false };
     }
 
     try {
       const computed = await computeLiveOverviewReport(workspaceId, filters);
-      setReportCache(workspaceId, 'overview', computed);
+      setReportCache(workspaceId, `overview_${filters.startDate||''}_${filters.endDate||''}`, computed);
       return { source: 'live' as const, data: computed, warnings: computed.warnings, unavailableMetrics: computed.unavailableMetrics, stale: false };
     } catch (err: any) {
       console.error('[LiveReportingService] Overview failed:', err.message);
@@ -807,14 +1169,14 @@ export class LiveReportingService {
       return { source: 'mock' as const, data: getMockDashboardMetrics(), warnings: [] as string[], unavailableMetrics: [] as string[], stale: false };
     }
 
-    const cached = getReportCache<any>(workspaceId, 'opportunity');
+    const cached = getReportCache<any>(workspaceId, `opportunity_${filters.startDate||''}_${filters.endDate||''}`);
     if (cached && !cached.stale) {
       return { source: 'live' as const, data: cached.data, warnings: [] as string[], unavailableMetrics: [] as string[], stale: false };
     }
 
     try {
       const computed = await computeLiveOpportunityReport(workspaceId, filters);
-      setReportCache(workspaceId, 'opportunity', computed);
+      setReportCache(workspaceId, `opportunity_${filters.startDate||''}_${filters.endDate||''}`, computed);
       return { source: 'live' as const, data: computed, warnings: computed.warnings, unavailableMetrics: computed.unavailableMetrics, stale: false };
     } catch (err: any) {
       console.error('[LiveReportingService] Opportunity failed:', err.message);
@@ -833,14 +1195,14 @@ export class LiveReportingService {
       return { source: 'mock' as const, data: getMockDashboardMetrics(), warnings: [] as string[], unavailableMetrics: [] as string[], stale: false };
     }
 
-    const cached = getReportCache<any>(workspaceId, 'sales');
+    const cached = getReportCache<any>(workspaceId, `sales_${filters.startDate||''}_${filters.endDate||''}`);
     if (cached && !cached.stale) {
       return { source: 'live' as const, data: cached.data, warnings: [] as string[], unavailableMetrics: [] as string[], stale: false };
     }
 
     try {
       const computed = await computeLiveSalesReport(workspaceId, filters);
-      setReportCache(workspaceId, 'sales', computed);
+      setReportCache(workspaceId, `sales_${filters.startDate||''}_${filters.endDate||''}`, computed);
       return { source: 'live' as const, data: computed, warnings: computed.warnings, unavailableMetrics: computed.unavailableMetrics, stale: false };
     } catch (err: any) {
       console.error('[LiveReportingService] Sales failed:', err.message);
@@ -862,7 +1224,7 @@ export class LiveReportingService {
       return { source: 'mock' as const, data: getMockOwnerReport(filters), warnings: [] as string[], unavailableMetrics: [] as string[], stale: false };
     }
 
-    const cacheKey = `owner_${filters.userId || 'all'}_${filters.source || 'all'}`;
+    const cacheKey = `owner_${filters.userId||'all'}_${filters.source||'all'}_${filters.startDate||''}_${filters.endDate||''}`;
     const cached = getReportCache<any>(workspaceId, cacheKey);
     if (cached && !cached.stale) {
       return { source: 'live' as const, data: cached.data, warnings: [] as string[], unavailableMetrics: [] as string[], stale: false };
@@ -892,7 +1254,7 @@ export class LiveReportingService {
       return { source: 'mock' as const, data: getMockMarketingReport(filters), warnings: [] as string[], unavailableMetrics: [] as string[], stale: false };
     }
 
-    const cacheKey = `marketing_${filters.source || 'all'}_${filters.campaign || 'all'}`;
+    const cacheKey = `marketing_${filters.source||'all'}_${filters.campaign||'all'}_${filters.startDate||''}_${filters.endDate||''}`;
     const cached = getReportCache<any>(workspaceId, cacheKey);
     if (cached && !cached.stale) {
       return { source: 'live' as const, data: cached.data, warnings: [] as string[], unavailableMetrics: [] as string[], stale: false };
@@ -908,6 +1270,151 @@ export class LiveReportingService {
         return { source: 'live' as const, data: null as any, error: err.message, warnings: [`Live data unavailable: ${err.message}`], unavailableMetrics: ['all'] as string[], stale: false };
       }
       return { source: 'mock' as const, data: getMockMarketingReport(filters), warnings: [`Dev fallback: ${err.message}`], unavailableMetrics: [] as string[], stale: false };
+    }
+  }
+
+  static async getAppointmentDashboardReport(
+    workspaceId: string,
+    filters: { startDate?: string; endDate?: string; userId?: string } = {}
+  ) {
+    const isProd = process.env.NODE_ENV === 'production';
+    const settings = db.getReportingSettings(workspaceId);
+
+    if (settings.mode === 'MOCK') {
+      const mockData: AppointmentDashboardReport = {
+        summary: { totalBooked: 58, totalShowed: 42, totalNoShow: 9, totalCancelled: 7, totalConfirmed: 0, showRate: 82, noShowRate: 18, cancellationRate: 12, upcomingCount: 14 },
+        statusDistribution: [
+          { status: 'Showed', count: 42 },
+          { status: 'No-Show', count: 9 },
+          { status: 'Cancelled', count: 7 }
+        ],
+        calendarBreakdown: [
+          { calendarId: 'cal_main', calendarName: 'Sales Consultations', total: 32, showed: 25, noshow: 5, cancelled: 2, confirmed: 0, showRate: 83 },
+          { calendarId: 'cal_pool', calendarName: 'Pool Inspections', total: 18, showed: 13, noshow: 3, cancelled: 2, confirmed: 0, showRate: 81 },
+          { calendarId: 'cal_follow', calendarName: 'Follow-Up Calls', total: 8, showed: 4, noshow: 1, cancelled: 3, confirmed: 0, showRate: 80 }
+        ],
+        repBreakdown: [
+          { userId: 'usr_001', userName: 'Marcus Sterling', booked: 18, showed: 15, noshow: 2, cancelled: 1, showRate: 88 },
+          { userId: 'usr_002', userName: 'Sarah Jenkins', booked: 22, showed: 16, noshow: 4, cancelled: 2, showRate: 80 },
+          { userId: 'usr_003', userName: 'Devon Carter', booked: 12, showed: 8, noshow: 2, cancelled: 2, showRate: 80 },
+          { userId: 'usr_004', userName: 'Isabella Cruz', booked: 6, showed: 3, noshow: 1, cancelled: 2, showRate: 75 }
+        ],
+        upcomingAppointments: [
+          { id: 'apt_001', title: 'Pool Design Consultation — Amanda Ross', startTime: new Date(Date.now() + 2 * 3600000).toISOString(), status: 'confirmed', userId: 'usr_001', userName: 'Marcus Sterling', calendarId: 'cal_main', calendarName: 'Sales Consultations' },
+          { id: 'apt_002', title: 'Pool Inspection — Donovan Corp', startTime: new Date(Date.now() + 5 * 3600000).toISOString(), status: 'confirmed', userId: 'usr_002', userName: 'Sarah Jenkins', calendarId: 'cal_pool', calendarName: 'Pool Inspections' },
+          { id: 'apt_003', title: 'Inground Spa Quote — Reyes Family', startTime: new Date(Date.now() + 26 * 3600000).toISOString(), status: 'confirmed', userId: 'usr_001', userName: 'Marcus Sterling', calendarId: 'cal_main', calendarName: 'Sales Consultations' },
+          { id: 'apt_004', title: 'Remodel Assessment — Holloway Estate', startTime: new Date(Date.now() + 50 * 3600000).toISOString(), status: 'confirmed', userId: 'usr_003', userName: 'Devon Carter', calendarId: 'cal_main', calendarName: 'Sales Consultations' },
+          { id: 'apt_005', title: 'Commercial Pool Bid — Park District', startTime: new Date(Date.now() + 74 * 3600000).toISOString(), status: 'confirmed', userId: 'usr_002', userName: 'Sarah Jenkins', calendarId: 'cal_main', calendarName: 'Sales Consultations' }
+        ],
+        trends: [
+          { date: 'Wk 1', booked: 12, showed: 8, noshow: 3 },
+          { date: 'Wk 2', booked: 16, showed: 12, noshow: 2 },
+          { date: 'Wk 3', booked: 18, showed: 14, noshow: 3 },
+          { date: 'Wk 4', booked: 12, showed: 8, noshow: 1 }
+        ]
+      };
+      return { source: 'mock' as const, data: mockData, warnings: [] as string[], unavailableMetrics: [] as string[], stale: false };
+    }
+
+    const cacheKey = `appointment_${filters.userId||'all'}_${filters.startDate||''}_${filters.endDate||''}`;
+    const cached = getReportCache<any>(workspaceId, cacheKey);
+    if (cached && !cached.stale) {
+      return { source: 'live' as const, data: cached.data, warnings: [] as string[], unavailableMetrics: [] as string[], stale: false };
+    }
+
+    try {
+      const result = await computeLiveAppointmentReport(workspaceId, filters);
+      setReportCache(workspaceId, cacheKey, result.data);
+      return { source: 'live' as const, data: result.data, warnings: result.warnings, unavailableMetrics: result.unavailableMetrics, stale: false };
+    } catch (err: any) {
+      console.error('[LiveReportingService] Appointment failed:', err.message);
+      if (isProd) {
+        return { source: 'live' as const, data: null as any, error: err.message, warnings: [`Live data unavailable: ${err.message}`], unavailableMetrics: ['all'] as string[], stale: false };
+      }
+      return { source: 'live' as const, data: null as any, warnings: [`Dev fallback: ${err.message}`], unavailableMetrics: [] as string[], stale: false };
+    }
+  }
+
+  static async getEstimatesInvoicesReport(
+    workspaceId: string,
+    filters: { startDate?: string; endDate?: string } = {}
+  ) {
+    const isProd = process.env.NODE_ENV === 'production';
+    const settings = db.getReportingSettings(workspaceId);
+
+    if (settings.mode === 'MOCK') {
+      const now = Date.now();
+      const d = (daysAgo: number) => new Date(now - daysAgo * 86400000).toISOString();
+      const mockData: EstimatesInvoicesReport = {
+        estimates: {
+          totalCount: 45,
+          totalValue: 543500,
+          byStatus: {
+            DRAFT:     { count: 5,  value: 48500  },
+            SENT:      { count: 12, value: 156000 },
+            VIEWED:    { count: 8,  value: 104200 },
+            ACCEPTED:  { count: 9,  value: 118500 },
+            REJECTED:  { count: 4,  value: 42000  },
+            CONVERTED: { count: 6,  value: 64800  },
+            EXPIRED:   { count: 1,  value: 9500   }
+          },
+          funnel: { sent: 40, sentValue: 495000, viewed: 27, viewRate: 68, accepted: 9, acceptanceRate: 23, rejected: 4, rejectionRate: 10, converted: 6, conversionRate: 15, expired: 1 }
+        },
+        invoices: {
+          totalCount: 31,
+          totalValue: 400500,
+          totalPaid: 214000,
+          totalOutstanding: 186000,
+          collectionRate: 53,
+          avgInvoiceValue: 14304,
+          byStatus: {
+            DRAFT:     { count: 2,  value: 24000,  amountPaid: 0,      amountDue: 24000  },
+            SENT:      { count: 6,  value: 87500,  amountPaid: 0,      amountDue: 87500  },
+            PAID:      { count: 14, value: 196000, amountPaid: 196000, amountDue: 0      },
+            PARTIAL:   { count: 3,  value: 48000,  amountPaid: 18000,  amountDue: 30000  },
+            OVERDUE:   { count: 5,  value: 68500,  amountPaid: 0,      amountDue: 68500  },
+            CANCELLED: { count: 1,  value: 8500,   amountPaid: 0,      amountDue: 0      }
+          },
+          aging: {
+            current:    { count: 4, value: 38000 },
+            days1to30:  { count: 4, value: 52000 },
+            days31to60: { count: 3, value: 54000 },
+            days61plus: { count: 3, value: 42000 }
+          },
+          unpaidList: [
+            { id: 'inv_m1', invoiceNumber: 'INV-0041', name: 'Inground Pool Construction', contactName: 'James & Amanda Holloway', contactEmail: 'holloway@email.com',    amountDue: 18200, total: 18200, dueDate: d(75),  issueDate: d(105), daysOverdue: 75, status: 'OVERDUE'  },
+            { id: 'inv_m2', invoiceNumber: 'INV-0038', name: 'Pool Renovation & Tile Work', contactName: 'Westside Properties LLC',  contactEmail: 'billing@westside.com', amountDue: 14800, total: 14800, dueDate: d(45),  issueDate: d(75),  daysOverdue: 45, status: 'OVERDUE'  },
+            { id: 'inv_m3', invoiceNumber: 'INV-0040', name: 'Spa Installation Package',   contactName: 'Carter Residence',         contactEmail: 'carter@home.net',      amountDue: 12400, total: 12400, dueDate: d(35),  issueDate: d(65),  daysOverdue: 35, status: 'OVERDUE'  },
+            { id: 'inv_m4', invoiceNumber: 'INV-0039', name: 'Commercial Pool Service',    contactName: 'Apex Athletic Club',       contactEmail: 'ops@apexclub.com',     amountDue: 23100, total: 23100, dueDate: d(22),  issueDate: d(52),  daysOverdue: 22, status: 'OVERDUE'  },
+            { id: 'inv_m5', invoiceNumber: 'INV-0043', name: 'Pool Deck & Coping Work',    contactName: 'Rivera Family Trust',      contactEmail: 'rivera@email.com',     amountDue: 8750,  total: 17500, dueDate: d(15),  issueDate: d(45),  daysOverdue: 15, status: 'PARTIAL'  },
+            { id: 'inv_m6', invoiceNumber: 'INV-0044', name: 'Equipment Upgrade Package',  contactName: 'Blue Water Estates',       contactEmail: 'bwe@estates.com',      amountDue: 7200,  total: 7200,  dueDate: d(8),   issueDate: d(38),  daysOverdue: 8,  status: 'SENT'    },
+            { id: 'inv_m7', invoiceNumber: 'INV-0045', name: 'Pool Cleaning Annual Plan',  contactName: 'Henderson Household',      contactEmail: 'henderson@mail.com',   amountDue: 5500,  total: 5500,  dueDate: d(-5),  issueDate: d(25),  daysOverdue: 0,  status: 'SENT'    },
+            { id: 'inv_m8', invoiceNumber: 'INV-0046', name: 'Leak Detection & Repair',    contactName: 'Davidson Properties',      contactEmail: 'davidson@prop.net',    amountDue: 14500, total: 29000, dueDate: d(-12), issueDate: d(18),  daysOverdue: 0,  status: 'PARTIAL' }
+          ]
+        },
+        crossMetrics: { estimateToInvoiceRate: 15 },
+        warnings: [],
+        unavailableMetrics: ['avgDaysToPayment']
+      };
+      return { source: 'mock' as const, data: mockData, warnings: [] as string[], unavailableMetrics: ['avgDaysToPayment'] as string[], stale: false };
+    }
+
+    const cacheKey = `estimates_invoices_${filters.startDate||''}_${filters.endDate||''}`;
+    const cached = getReportCache<any>(workspaceId, cacheKey);
+    if (cached && !cached.stale) {
+      return { source: 'live' as const, data: cached.data, warnings: [] as string[], unavailableMetrics: [] as string[], stale: false };
+    }
+
+    try {
+      const result = await computeLiveEstimatesInvoicesReport(workspaceId, filters);
+      setReportCache(workspaceId, cacheKey, result.data);
+      return { source: 'live' as const, data: result.data, warnings: result.warnings, unavailableMetrics: result.unavailableMetrics, stale: false };
+    } catch (err: any) {
+      console.error('[LiveReportingService] EstimatesInvoices failed:', err.message);
+      if (isProd) {
+        return { source: 'live' as const, data: null as any, error: err.message, warnings: [`Live data unavailable: ${err.message}`], unavailableMetrics: ['all'] as string[], stale: false };
+      }
+      return { source: 'live' as const, data: null as any, warnings: [`Dev fallback: ${err.message}`], unavailableMetrics: [] as string[], stale: false };
     }
   }
 }

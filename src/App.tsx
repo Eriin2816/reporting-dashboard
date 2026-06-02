@@ -4,12 +4,15 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { 
-  Building2, 
-  LayoutDashboard, 
-  BarChart3, 
-  Users2, 
-  SlidersHorizontal, 
+import {
+  Building2,
+  LayoutDashboard,
+  BarChart3,
+  Users2,
+  TrendingUp,
+  DollarSign,
+  Receipt,
+  SlidersHorizontal,
   AlertCircle,
   Clock,
   Sparkles,
@@ -23,7 +26,6 @@ import {
   Shield,
   CreditCard,
   Building,
-  UserCheck,
   PowerOff
 } from 'lucide-react';
 
@@ -58,7 +60,7 @@ const initialMetrics: DashboardMetrics = {
 };
 
 function AppCockpit({ user, activeWorkspace, role, workspaces, token, logout, triggerRefresh, switchWorkspace }: any) {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'owner-performance' | 'marketing-performance' | 'ghl-settings' | 'settings' | 'admin' | 'billing'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'opportunity-dashboard' | 'sales-dashboard' | 'appointment-dashboard' | 'marketing-dashboard' | 'estimates-dashboard' | 'ghl-settings' | 'settings' | 'admin' | 'billing'>('dashboard');
   
   // Dashboard states
   const [metrics, setMetrics] = useState<DashboardMetrics>(initialMetrics);
@@ -300,8 +302,8 @@ function AppCockpit({ user, activeWorkspace, role, workspaces, token, logout, tr
             
             {/* Nav Section Label */}
             <span className="text-[9px] text-slate-500 uppercase tracking-widest block font-extrabold mb-2 pt-2">PRIMARY ANALYTICS</span>
-            
-            {/* General Dashboard Link */}
+
+            {/* General Dashboard */}
             <button
               onClick={() => setActiveTab('dashboard')}
               id="nav-btn-dashboard"
@@ -315,32 +317,74 @@ function AppCockpit({ user, activeWorkspace, role, workspaces, token, logout, tr
               General Dashboard
             </button>
 
-            {/* Owner Performance Link */}
+            {/* Opportunity Dashboard */}
             <button
-              onClick={() => setActiveTab('owner-performance')}
-              id="nav-btn-owner-perf"
+              onClick={() => setActiveTab('opportunity-dashboard')}
+              id="nav-btn-opportunity"
               className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-bold transition-all text-left cursor-pointer ${
-                activeTab === 'owner-performance'
+                activeTab === 'opportunity-dashboard'
                   ? 'bg-blue-600 text-white shadow-sm'
                   : 'text-slate-400 hover:bg-[#111c2e] hover:text-white'
               }`}
             >
-              <UserCheck className="w-4 h-4 shrink-0 text-blue-500" />
-              Owner Performance
+              <TrendingUp className="w-4 h-4 shrink-0 text-blue-500" />
+              Opportunity Dashboard
             </button>
 
-            {/* Marketing Performance Link */}
+            {/* Sales Dashboard */}
             <button
-              onClick={() => setActiveTab('marketing-performance')}
-              id="nav-btn-marketing-perf"
+              onClick={() => setActiveTab('sales-dashboard')}
+              id="nav-btn-sales"
               className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-bold transition-all text-left cursor-pointer ${
-                activeTab === 'marketing-performance'
+                activeTab === 'sales-dashboard'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:bg-[#111c2e] hover:text-white'
+              }`}
+            >
+              <DollarSign className="w-4 h-4 shrink-0 text-blue-500" />
+              Sales Dashboard
+            </button>
+
+            {/* Appointment Dashboard */}
+            <button
+              onClick={() => setActiveTab('appointment-dashboard')}
+              id="nav-btn-appointment"
+              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-bold transition-all text-left cursor-pointer ${
+                activeTab === 'appointment-dashboard'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:bg-[#111c2e] hover:text-white'
+              }`}
+            >
+              <CalendarDays className="w-4 h-4 shrink-0 text-blue-500" />
+              Appointment Dashboard
+            </button>
+
+            {/* Marketing Dashboard */}
+            <button
+              onClick={() => setActiveTab('marketing-dashboard')}
+              id="nav-btn-marketing"
+              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-bold transition-all text-left cursor-pointer ${
+                activeTab === 'marketing-dashboard'
                   ? 'bg-blue-600 text-white shadow-sm'
                   : 'text-slate-400 hover:bg-[#111c2e] hover:text-white'
               }`}
             >
               <BarChart3 className="w-4 h-4 shrink-0 text-blue-500" />
-              Marketing Performance
+              Marketing Dashboard
+            </button>
+
+            {/* Estimates & Invoices */}
+            <button
+              onClick={() => setActiveTab('estimates-dashboard')}
+              id="nav-btn-estimates"
+              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-bold transition-all text-left cursor-pointer ${
+                activeTab === 'estimates-dashboard'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:bg-[#111c2e] hover:text-white'
+              }`}
+            >
+              <Receipt className="w-4 h-4 shrink-0 text-blue-500" />
+              Estimates &amp; Invoices
             </button>
 
             {/* Config Section Label */}
@@ -522,12 +566,12 @@ function AppCockpit({ user, activeWorkspace, role, workspaces, token, logout, tr
                 />
               )}
 
-              {activeTab === 'owner-performance' && (
+              {activeTab === 'opportunity-dashboard' && (
                 <ReportingCommandCenter
                   dataSourceMode={config.dataSourceMode}
                   onSyncMetrics={() => fetchAllReportingData(true)}
                   isSyncing={isFetchingSub}
-                  forcedView="owner"
+                  forcedView="opportunity"
                   token={token}
                   user={user}
                   activeWorkspace={activeWorkspace}
@@ -535,12 +579,51 @@ function AppCockpit({ user, activeWorkspace, role, workspaces, token, logout, tr
                 />
               )}
 
-              {activeTab === 'marketing-performance' && (
+              {activeTab === 'sales-dashboard' && (
+                <ReportingCommandCenter
+                  dataSourceMode={config.dataSourceMode}
+                  onSyncMetrics={() => fetchAllReportingData(true)}
+                  isSyncing={isFetchingSub}
+                  forcedView="sales"
+                  token={token}
+                  user={user}
+                  activeWorkspace={activeWorkspace}
+                  role={role}
+                />
+              )}
+
+              {activeTab === 'appointment-dashboard' && (
+                <ReportingCommandCenter
+                  dataSourceMode={config.dataSourceMode}
+                  onSyncMetrics={() => fetchAllReportingData(true)}
+                  isSyncing={isFetchingSub}
+                  forcedView="appointment"
+                  token={token}
+                  user={user}
+                  activeWorkspace={activeWorkspace}
+                  role={role}
+                />
+              )}
+
+              {activeTab === 'marketing-dashboard' && (
                 <ReportingCommandCenter
                   dataSourceMode={config.dataSourceMode}
                   onSyncMetrics={() => fetchAllReportingData(true)}
                   isSyncing={isFetchingSub}
                   forcedView="marketing"
+                  token={token}
+                  user={user}
+                  activeWorkspace={activeWorkspace}
+                  role={role}
+                />
+              )}
+
+              {activeTab === 'estimates-dashboard' && (
+                <ReportingCommandCenter
+                  dataSourceMode={config.dataSourceMode}
+                  onSyncMetrics={() => fetchAllReportingData(true)}
+                  isSyncing={isFetchingSub}
+                  forcedView="estimates"
                   token={token}
                   user={user}
                   activeWorkspace={activeWorkspace}

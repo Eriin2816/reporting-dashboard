@@ -4,24 +4,16 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { 
-  Calendar, 
-  MapPin, 
-  UserCircle2, 
-  Share2, 
-  Megaphone, 
-  Download, 
-  RefreshCw, 
+import {
+  Calendar,
+  MapPin,
+  Download,
+  RefreshCw,
   FileSpreadsheet,
   AlertOctagon,
-  Printer,
   Copy,
   RotateCcw,
   Clock,
-  ShieldAlert,
-  SlidersHorizontal,
-  CheckCircle2,
-  XCircle,
   FileDown
 } from 'lucide-react';
 
@@ -29,16 +21,29 @@ import {
 import OverviewDashboardView from './OverviewDashboardView';
 import OpportunityDashboardView from './OpportunityDashboardView';
 import SalesDashboardView from './SalesDashboardView';
-import OwnerDashboardView from './OwnerDashboardView';
+import AppointmentDashboardView from './AppointmentDashboardView';
 import MarketingDashboardView from './MarketingDashboardView';
+import EstimatesInvoicesDashboardView from './EstimatesInvoicesDashboardView';
 
-import { OwnerPerformanceReport, MarketingPerformanceReport, ApiResponse } from '../types';
+import { OwnerPerformanceReport, MarketingPerformanceReport, AppointmentDashboardReport, EstimatesInvoicesReport, IntegrationStatus, GA4Report, ApiResponse } from '../types';
+
+function getMonthToDateLA(): { start: string; end: string } {
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Los_Angeles',
+    year: 'numeric', month: '2-digit', day: '2-digit'
+  });
+  const parts = fmt.formatToParts(new Date());
+  const y = parts.find(p => p.type === 'year')!.value;
+  const m = parts.find(p => p.type === 'month')!.value;
+  const d = parts.find(p => p.type === 'day')!.value;
+  return { start: `${y}-${m}-01`, end: `${y}-${m}-${d}` };
+}
 
 interface ReportingCommandCenterProps {
   dataSourceMode: 'MOCK' | 'LIVE';
   onSyncMetrics: () => void;
   isSyncing: boolean;
-  forcedView?: 'overview' | 'opportunity' | 'sales' | 'owner' | 'marketing';
+  forcedView?: 'overview' | 'opportunity' | 'sales' | 'appointment' | 'marketing' | 'estimates';
   token?: string;
   user?: any;
   activeWorkspace?: any;
@@ -56,7 +61,7 @@ export default function ReportingCommandCenter({
   role
 }: ReportingCommandCenterProps) {
   // 1. Selector states
-  const [dashboardType, setDashboardType] = useState<'overview' | 'opportunity' | 'sales' | 'owner' | 'marketing'>(forcedView || 'overview');
+  const [dashboardType, setDashboardType] = useState<'overview' | 'opportunity' | 'sales' | 'appointment' | 'marketing' | 'estimates'>(forcedView || 'overview');
   
   // Sync forcedView prop to state if provided
   useEffect(() => {
@@ -65,13 +70,17 @@ export default function ReportingCommandCenter({
     }
   }, [forcedView]);
 
-  // 2. Filter states & pristine baseline
-  const [startDate, setStartDate] = useState<string>('2026-05-01');
-  const [endDate, setEndDate] = useState<string>('2026-05-27');
+  // 2. Filter states — dates default to month-to-date in America/Los_Angeles on every mount
+  const [startDate, setStartDate] = useState<string>(() => getMonthToDateLA().start);
+  const [endDate, setEndDate] = useState<string>(() => getMonthToDateLA().end);
   const [location, setLocation] = useState<string>('loc_g53h7s8a');
-  const [selectedRep, setSelectedRep] = useState<string>('');
-  const [selectedSource, setSelectedSource] = useState<string>('');
-  const [selectedCampaign, setSelectedCampaign] = useState<string>('');
+  const [isPdfLoading, setIsPdfLoading] = useState<boolean>(false);
+  const [estimatesReport, setEstimatesReport] = useState<EstimatesInvoicesReport | null>(null);
+  const [isEstimatesLoading, setIsEstimatesLoading] = useState<boolean>(false);
+  const [ga4Integration, setGa4Integration] = useState<IntegrationStatus | null>(null);
+  const [ga4Report, setGa4Report] = useState<GA4Report | null>(null);
+  const [isGa4Loading, setIsGa4Loading] = useState<boolean>(false);
+  const [ga4RefreshSeq, setGa4RefreshSeq] = useState<number>(0);
 
   // Local re-fetch sequencer trigger
   const [refreshTriggerSeq, setRefreshTriggerSeq] = useState<number>(0);
@@ -83,6 +92,7 @@ export default function ReportingCommandCenter({
   // 3. API payload states
   const [ownerReport, setOwnerReport] = useState<OwnerPerformanceReport | null>(null);
   const [marketingReport, setMarketingReport] = useState<MarketingPerformanceReport | null>(null);
+  const [appointmentReport, setAppointmentReport] = useState<AppointmentDashboardReport | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [responseContext, setResponseContext] = useState<{
     source: 'mock' | 'live';
@@ -103,9 +113,6 @@ export default function ReportingCommandCenter({
         const params = new URLSearchParams();
         if (startDate) params.append('startDate', startDate);
         if (endDate) params.append('endDate', endDate);
-        if (selectedRep) params.append('userId', selectedRep);
-        if (selectedSource) params.append('source', selectedSource);
-        if (selectedCampaign) params.append('campaign', selectedCampaign);
 
         const queryStr = params.toString();
 
@@ -116,15 +123,17 @@ export default function ReportingCommandCenter({
         }
 
         // Query the endpoints in parallel with full auth metadata
-        const [ownerRes, markRes] = await Promise.all([
+        const [ownerRes, markRes, aptRes] = await Promise.all([
           fetch(`/api/reporting/owner-performance?${queryStr}`, { headers }),
-          fetch(`/api/reporting/marketing-performance?${queryStr}`, { headers })
+          fetch(`/api/reporting/marketing-performance?${queryStr}`, { headers }),
+          fetch(`/api/reporting/appointment-performance?${queryStr}`, { headers })
         ]);
 
         if (!active) return;
 
         const ownerData: ApiResponse<OwnerPerformanceReport> = await ownerRes.json();
         const markData: ApiResponse<MarketingPerformanceReport> = await markRes.json();
+        const aptData: ApiResponse<AppointmentDashboardReport> = await aptRes.json();
 
         if (ownerData.status === 'success' && markData.status === 'success') {
           setOwnerReport(ownerData.data);
@@ -133,9 +142,12 @@ export default function ReportingCommandCenter({
             source: ownerData.source,
             generatedAt: ownerData.generatedAt,
             stale: ownerData.stale,
-            warnings: [...(ownerData.warnings || []), ...(markData.warnings || [])],
-            unavailableMetrics: [...(ownerData.unavailableMetrics || []), ...(markData.unavailableMetrics || [])]
+            warnings: [...(ownerData.warnings || []), ...(markData.warnings || []), ...(aptData.warnings || [])],
+            unavailableMetrics: [...(ownerData.unavailableMetrics || []), ...(markData.unavailableMetrics || []), ...(aptData.unavailableMetrics || [])]
           });
+        }
+        if (aptData.status === 'success') {
+          setAppointmentReport(aptData.data);
         }
       } catch (err) {
         console.error("Failed to compile reporting components:", err);
@@ -149,31 +161,86 @@ export default function ReportingCommandCenter({
     return () => {
       active = false;
     };
-  }, [startDate, endDate, selectedRep, selectedSource, selectedCampaign, location, isSyncing, refreshTriggerSeq, token]);
+  }, [startDate, endDate, location, refreshTriggerSeq, token]);
 
-  // Human Readable User Rep Mapping
-  const getUserLabel = (id: string) => {
-    const reps: Record<string, string> = {
-      'usr_001': 'Marcus Sterling (Owner)',
-      'usr_002': 'Sarah Jenkins (Closer)',
-      'usr_003': 'Devon Carter (Rep)',
-      'usr_004': 'Isabella Cruz (Closer)'
-    };
-    return reps[id] || id;
-  };
+  // Lazy-load estimates/invoices only when that view is active
+  const isEstimatesView = dashboardType === 'estimates';
+  useEffect(() => {
+    if (!isEstimatesView) return;
+    let active = true;
+    async function fetchEstimates() {
+      setIsEstimatesLoading(true);
+      try {
+        const params = new URLSearchParams();
+        if (startDate) params.append('startDate', startDate);
+        if (endDate) params.append('endDate', endDate);
+        const headers: Record<string, string> = {};
+        const activeToken = token || localStorage.getItem('saas_token') || '';
+        if (activeToken) headers['x-auth-token'] = activeToken;
+        const res = await fetch(`/api/reporting/estimates-invoices?${params}`, { headers });
+        if (!active) return;
+        const data: ApiResponse<EstimatesInvoicesReport> = await res.json();
+        if (data.status === 'success') setEstimatesReport(data.data);
+      } catch (err) {
+        console.error('[Estimates fetch]', err);
+      } finally {
+        if (active) setIsEstimatesLoading(false);
+      }
+    }
+    fetchEstimates();
+    return () => { active = false; };
+  }, [isEstimatesView, startDate, endDate, refreshTriggerSeq, token]);
+
+  // Lazy-load GA4 integration status + report only when marketing view is active
+  const isMarketingView = dashboardType === 'marketing';
+  useEffect(() => {
+    if (!isMarketingView) return;
+    let active = true;
+    async function fetchGA4() {
+      setIsGa4Loading(true);
+      try {
+        const params = new URLSearchParams();
+        if (startDate) params.append('startDate', startDate);
+        if (endDate) params.append('endDate', endDate);
+        const activeToken = token || localStorage.getItem('saas_token') || '';
+        const headers: Record<string, string> = { 'x-auth-token': activeToken };
+        const cacheBust = `_t=${Date.now()}`;
+        const [statusRes, reportRes] = await Promise.all([
+          fetch(`/api/integrations/status?${cacheBust}`, { headers, cache: 'no-store' }),
+          fetch(`/api/reporting/ga4?${params}&${cacheBust}`, { headers, cache: 'no-store' })
+        ]);
+        if (!active) return;
+        const statusData = await statusRes.json();
+        const reportData = await reportRes.json();
+        if (statusData.status === 'success') {
+          const ga4 = (statusData.integrations || []).find((i: any) => i.provider === 'google_analytics');
+          setGa4Integration(ga4 || { provider: 'google_analytics', status: 'NOT_CONNECTED', propertyId: null, propertyName: null, connectedAt: null });
+        }
+        if (reportData.status === 'success' && reportData.data) {
+          setGa4Report(reportData.data);
+        } else if (reportData.status === 'success' && !reportData.connected) {
+          setGa4Report(null);
+        }
+      } catch (err) {
+        console.error('[GA4 fetch]', err);
+      } finally {
+        if (active) setIsGa4Loading(false);
+      }
+    }
+    fetchGA4();
+    return () => { active = false; };
+  }, [isMarketingView, startDate, endDate, refreshTriggerSeq, ga4RefreshSeq, token]);
 
   // Determine active custom filters to display summary
   const getActiveFiltersList = () => {
+    const mtd = getMonthToDateLA();
     const list: { key: string; label: string; clearFn: () => void }[] = [];
-    
-    if (startDate !== '2026-05-01' || endDate !== '2026-05-27') {
+
+    if (startDate !== mtd.start || endDate !== mtd.end) {
       list.push({
         key: 'date',
         label: `Period: ${startDate} to ${endDate}`,
-        clearFn: () => {
-          setStartDate('2026-05-01');
-          setEndDate('2026-05-27');
-        }
+        clearFn: () => { const d = getMonthToDateLA(); setStartDate(d.start); setEndDate(d.end); }
       });
     }
 
@@ -185,47 +252,84 @@ export default function ReportingCommandCenter({
       });
     }
 
-    if (selectedRep) {
-      list.push({
-        key: 'rep',
-        label: `Rep: ${getUserLabel(selectedRep)}`,
-        clearFn: () => setSelectedRep('')
-      });
-    }
-
-    if (selectedSource) {
-      list.push({
-        key: 'source',
-        label: `Source: ${selectedSource}`,
-        clearFn: () => setSelectedSource('')
-      });
-    }
-
-    if (selectedCampaign) {
-      list.push({
-        key: 'campaign',
-        label: `UTM Campaign: ${selectedCampaign}`,
-        clearFn: () => setSelectedCampaign('')
-      });
-    }
-
     return list;
   };
 
-  // Clear all filters handler
+  // Clear all filters — reset to MTD + default location
   const handleClearAllFilters = () => {
-    setStartDate('2026-05-01');
-    setEndDate('2026-05-27');
+    const mtd = getMonthToDateLA();
+    setStartDate(mtd.start);
+    setEndDate(mtd.end);
     setLocation('loc_g53h7s8a');
-    setSelectedRep('');
-    setSelectedSource('');
-    setSelectedCampaign('');
   };
 
   // Manual fast layout reload
   const handleManualRefresh = () => {
     setRefreshTriggerSeq(prev => prev + 1);
-    onSyncMetrics();
+  };
+
+  // One-click PDF download — captures dashboard stage, assembles multi-page PDF via jsPDF
+  const handleDownloadPDF = async () => {
+    const stage = document.getElementById('command-center-dashboard-stage');
+    if (!stage) return;
+    setIsPdfLoading(true);
+    try {
+      const { toPng } = await import('html-to-image');
+      const { jsPDF } = await import('jspdf');
+
+      const dataUrl = await toPng(stage, {
+        pixelRatio: 2,
+        backgroundColor: '#f1f5f9',
+        cacheBust: true
+      });
+
+      const img = new Image();
+      img.src = dataUrl;
+      await new Promise<void>(resolve => { img.onload = () => resolve(); });
+
+      const A4_W = 210;
+      const A4_H = 297;
+      const margin = 10;
+      const headerH = 20;
+      const contentW = A4_W - margin * 2;
+      const scale = contentW / img.naturalWidth;
+      const imgH = img.naturalHeight * scale;
+
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+      const wsName = activeWorkspace?.name || 'Dashboard';
+      const today = new Date().toISOString().slice(0, 10);
+      const viewLabel = (forcedView || dashboardType).charAt(0).toUpperCase() + (forcedView || dashboardType).slice(1);
+      const fileName = `DashPro-Report-${wsName.replace(/[^a-z0-9]/gi, '-')}-${today}.pdf`;
+
+      // Header band on page 1
+      pdf.setFillColor(11, 20, 36);
+      pdf.rect(0, 0, A4_W, headerH, 'F');
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(10);
+      pdf.setTextColor(255, 255, 255);
+      pdf.text(`${wsName} — ${viewLabel} Dashboard`, margin, 9);
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(7.5);
+      pdf.setTextColor(148, 163, 184);
+      pdf.text(`Period: ${startDate} – ${endDate}   |   Generated: ${today}   |   DashPro Reporting`, margin, 16);
+
+      // Image starts below header; jsPDF clips naturally at page boundary
+      pdf.addImage(dataUrl, 'PNG', margin, headerH, contentW, imgH);
+
+      // Additional pages — shift image up so the next slice is visible
+      const firstSlice = A4_H - headerH;
+      for (let p = 1; firstSlice + (p - 1) * A4_H < imgH; p++) {
+        pdf.addPage();
+        pdf.addImage(dataUrl, 'PNG', margin, -(firstSlice + (p - 1) * A4_H), contentW, imgH);
+      }
+
+      pdf.save(fileName);
+    } catch (err: any) {
+      console.error('[PDF Export] Failed:', err);
+      alert(`PDF export failed: ${err.message}\n\nThis may be a CSS compatibility issue — contact support to enable server-side rendering.`);
+    } finally {
+      setIsPdfLoading(false);
+    }
   };
 
   /**
@@ -275,16 +379,14 @@ export default function ReportingCommandCenter({
       csvContent += `"Average Closed Ticket Size","$${avgDealValue} Per Deal","Stable","Average deal weight"\n`;
       csvContent += `"Appointment-to-Won Velocity Rate","${s.bookingToWonConvRate}%","+1.5%","Appointments closing factor"\n`;
     } 
-    else if (dashboardType === 'owner') {
-      const s = ownerReport.summary;
-      const bestPerformer = [...ownerReport.ownerBreakdown].sort((a, b) => b.wonRevenue - a.wonRevenue)[0];
-      const lowestResponse = [...ownerReport.ownerBreakdown].sort((a, b) => a.avgSpeedToLeadSec - b.avgSpeedToLeadSec)[0];
-
-      csvContent += `"Fastest Speed-to-Lead SLA","${lowestResponse?.userName || 'N/A'} (${lowestResponse?.avgSpeedToLeadSec}s)","SLA Compliant","Fastest representative feedback"\n`;
-      csvContent += `"Top Sales Volume Performer","${bestPerformer?.userName || 'N/A'} ($${bestPerformer?.wonRevenue.toLocaleString()})","Target Achieved","Max closed won dollar weight"\n`;
-      csvContent += `"Overall Attributed Team Revenue","$${s.wonRevenue} Cash","+24.1%","Consolidated workspace sales"\n`;
-      csvContent += `"Average Team Speed to Lead","${s.avgSpeedToLeadSec} Seconds","SLA Certified","Consolidated communication speed"\n`;
-      csvContent += `"Missed Calls / Idle Contacts","${s.missedLeadsOrCalls} Misses","Risk Warning","Untouched pipeline risk"\n`;
+    else if (dashboardType === 'appointment') {
+      const s = appointmentReport.summary;
+      csvContent += `"Total Booked Appointments","${s.totalBooked} Bookings","Baseline","Calendar bookings in period"\n`;
+      csvContent += `"Total Showed (Attended)","${s.totalShowed} Showed","+Show","Confirmed attended consultations"\n`;
+      csvContent += `"Show Rate","${s.showRate}%","Target: 80%","Attended vs showed+noshow"\n`;
+      csvContent += `"No-Shows","${s.totalNoShow} No-Shows","${s.noShowRate}% Rate","Missed appointments"\n`;
+      csvContent += `"Cancellations","${s.totalCancelled} Cancelled","${s.cancellationRate}% Rate","Cancelled appointments"\n`;
+      csvContent += `"Upcoming Appointments","${s.upcomingCount} Upcoming","Scheduled","Future scheduled"\n`;
     } 
     else if (dashboardType === 'marketing') {
       const s = marketingReport.summary;
@@ -294,6 +396,18 @@ export default function ReportingCommandCenter({
       csvContent += `"Marketing Solid Attributed Revenue","$${s.totalWonRevenue} Cash","+24.1%","Final closed marketing value"\n`;
       csvContent += `"Primary Cost Per Sourced Lead","$${s.costPerLeadPlaceholder} CPL","Optimized","Normalized acquisition expense"\n`;
       csvContent += `"Consolidated ROAS Multiple","${s.roasPlaceholder}x Return","Excellent","Sales conversion vs budget coefficient"\n`;
+    }
+
+    if (dashboardType === 'estimates' && estimatesReport) {
+      const e = estimatesReport.estimates;
+      const i = estimatesReport.invoices;
+      csvContent += `"Estimates Sent","${e.funnel.sent}","${e.funnel.viewRate}% View Rate","Non-draft estimates"\n`;
+      csvContent += `"Acceptance Rate","${e.funnel.acceptanceRate}%","${e.funnel.accepted} accepted","Accepted / sent"\n`;
+      csvContent += `"Estimate→Invoice Rate","${e.funnel.conversionRate}%","${e.funnel.converted} converted","Converted / sent"\n`;
+      csvContent += `"Total Invoiced","$${i.totalValue.toLocaleString()}","${i.totalCount} invoices","Billable invoices"\n`;
+      csvContent += `"Total Collected","$${i.totalPaid.toLocaleString()}","${i.collectionRate}% rate","Payments received"\n`;
+      csvContent += `"Outstanding Balance","$${i.totalOutstanding.toLocaleString()}","AR","Unpaid invoices"\n`;
+      csvContent += `"Overdue 60+ Days","$${i.aging.days61plus.value.toLocaleString()}","${i.aging.days61plus.count} invoices","Severely overdue"\n`;
     }
 
     triggerCSVDownload(csvContent, `highlevel-kpi-${dashboardType}-summary.csv`);
@@ -346,12 +460,16 @@ export default function ReportingCommandCenter({
         csvContent += `"${r.userName}","$${r.wonRevenue} Won","$${r.pipelineValue} Potential","${r.closeRate}% Win"\n`;
       });
     } 
-    else if (dashboardType === 'owner') {
-      csvContent += `"Team Members GHL SLA Conversions Dashboard"\n`;
-      csvContent += `"Rank Placement","Representative","Leads Sourced","Consultations Booked","Speed-To-Lead SLA","Pipeline Value","Revenue Converted","Close Rate Yield"\n`;
-      const sortedReps = [...ownerReport.ownerBreakdown].sort((a,b) => b.wonRevenue - a.wonRevenue);
-      sortedReps.forEach((r, idx) => {
-        csvContent += `"#${idx + 1}","${r.userName} (${r.userEmail})","${r.totalLeads}","${r.bookedAppointments} Booked","${r.avgSpeedToLeadSec}s Avg","$${r.pipelineValue}","$${r.wonRevenue} Won","${r.closeRate}%"\n`;
+    else if (dashboardType === 'appointment') {
+      csvContent += `"Appointment Performance by Calendar"\n`;
+      csvContent += `"Calendar Name","Total Booked","Showed","No-Show","Cancelled","Show Rate"\n`;
+      appointmentReport.calendarBreakdown.forEach(cal => {
+        csvContent += `"${cal.calendarName}","${cal.total}","${cal.showed}","${cal.noshow}","${cal.cancelled}","${cal.showRate}%"\n`;
+      });
+      csvContent += `\n"Appointment Performance by Team Member"\n`;
+      csvContent += `"Team Member","Total Booked","Showed","No-Show","Cancelled","Show Rate"\n`;
+      appointmentReport.repBreakdown.sort((a, b) => b.booked - a.booked).forEach(rep => {
+        csvContent += `"${rep.userName}","${rep.booked}","${rep.showed}","${rep.noshow}","${rep.cancelled}","${rep.showRate}%"\n`;
       });
     } 
     else if (dashboardType === 'marketing') {
@@ -359,6 +477,19 @@ export default function ReportingCommandCenter({
       csvContent += `"Campaign Identifier","UTM Source Name","Leads Count","Bookings","Gross Pipeline Worth","Actual Revenue Won","Spent Budget","ROAS Conversion Rate"\n`;
       marketingReport.campaignBreakdown.forEach(c => {
         csvContent += `"${c.campaignId}","${c.campaignName}","${c.leads}","${c.bookings} Booked","$${c.pipelineValue}","$${c.wonRevenue} Won","$${c.cost}","${c.conversionRate}%"\n`;
+      });
+    }
+
+    if (dashboardType === 'estimates' && estimatesReport) {
+      csvContent += `"Unpaid Invoices"\n`;
+      csvContent += `"Invoice #","Contact","Email","Amount Due","Total","Issue Date","Due Date","Days Overdue","Status"\n`;
+      estimatesReport.invoices.unpaidList.forEach(inv => {
+        csvContent += `"${inv.invoiceNumber}","${inv.contactName}","${inv.contactEmail}","$${inv.amountDue}","$${inv.total}","${inv.issueDate.slice(0,10)}","${inv.dueDate.slice(0,10)}","${inv.daysOverdue}","${inv.status}"\n`;
+      });
+      csvContent += `\n"Estimate Status Summary"\n`;
+      csvContent += `"Status","Count","Total Value"\n`;
+      (Object.entries(estimatesReport.estimates.byStatus) as [string, { count: number; value: number }][]).forEach(([s, d]) => {
+        csvContent += `"${s}","${d.count}","$${d.value}"\n`;
       });
     }
 
@@ -401,7 +532,7 @@ export default function ReportingCommandCenter({
     summaryText += `🕒 Generated At: ${responseContext?.generatedAt || new Date().toISOString()}\n`;
     summaryText += `==============================================\n\n`;
 
-    if (dashboardType === 'overview' || dashboardType === 'opportunity' || dashboardType === 'sales' || dashboardType === 'owner') {
+    if (dashboardType === 'overview' || dashboardType === 'opportunity' || dashboardType === 'sales') {
       const s = ownerReport.summary;
       summaryText += `🏆 CORE PERFORMANCE METRICS:\n`;
       summaryText += ` - Total Leads Inflow: ${s.totalLeads} Contacts\n`;
@@ -418,7 +549,28 @@ export default function ReportingCommandCenter({
         summaryText += ` - Volume Closed: $${best.wonRevenue.toLocaleString()} Won\n`;
         summaryText += ` - Closed Close Rate: ${best.closeRate}%\n\n`;
       }
-    } 
+    }
+    else if (dashboardType === 'estimates' && estimatesReport) {
+      const e = estimatesReport.estimates;
+      const i = estimatesReport.invoices;
+      summaryText += `📄 ESTIMATES & INVOICES SUMMARY:\n`;
+      summaryText += ` - Estimates Sent: ${e.funnel.sent} (${e.funnel.viewRate}% viewed, ${e.funnel.acceptanceRate}% accepted)\n`;
+      summaryText += ` - Converted to Invoice: ${e.funnel.converted} (${e.funnel.conversionRate}%)\n\n`;
+      summaryText += ` - Total Invoiced: $${i.totalValue.toLocaleString()}\n`;
+      summaryText += ` - Collected: $${i.totalPaid.toLocaleString()} (${i.collectionRate}% collection rate)\n`;
+      summaryText += ` - Outstanding: $${i.totalOutstanding.toLocaleString()}\n`;
+      summaryText += ` - Overdue 60+ Days: $${i.aging.days61plus.value.toLocaleString()} (${i.aging.days61plus.count} invoices)\n\n`;
+    }
+    else if (dashboardType === 'appointment') {
+      const a = appointmentReport.summary;
+      summaryText += `📅 APPOINTMENT PERFORMANCE SUMMARY:\n`;
+      summaryText += ` - Total Booked: ${a.totalBooked} Appointments\n`;
+      summaryText += ` - Showed: ${a.totalShowed} Attended\n`;
+      summaryText += ` - Show Rate: ${a.showRate}%\n`;
+      summaryText += ` - No-Shows: ${a.totalNoShow} (${a.noShowRate}%)\n`;
+      summaryText += ` - Cancellations: ${a.totalCancelled} (${a.cancellationRate}%)\n`;
+      summaryText += ` - Upcoming: ${a.upcomingCount} Scheduled\n\n`;
+    }
     else if (dashboardType === 'marketing') {
       const m = marketingReport.summary;
       summaryText += `📣 AD UTM CAMPAIGNS SUMMARY:\n`;
@@ -459,10 +611,6 @@ export default function ReportingCommandCenter({
 
   const showFallbackDialog = (text: string) => {
     setFallbackCopyText(text);
-  };
-
-  const handlePrintReport = () => {
-    window.print();
   };
 
   return (
@@ -677,14 +825,15 @@ export default function ReportingCommandCenter({
               <span>{copiedSuccess ? 'Copied View!' : 'Copy Summary'}</span>
             </button>
 
-            {/* Print Friendly Trigger */}
+            {/* Download as PDF */}
             <button
-              onClick={handlePrintReport}
-              title="Format system cards and grids for printing or PDF save"
-              className="flex items-center gap-1.5 text-xs bg-white border border-slate-205 hover:bg-slate-50 text-slate-705 px-3 py-1.5 rounded-lg font-bold shadow-2xs transition cursor-pointer"
+              onClick={handleDownloadPDF}
+              disabled={isPdfLoading || isLoading || !ownerReport}
+              title="Download current dashboard view as a PDF file"
+              className="flex items-center gap-1.5 text-xs bg-white border border-slate-205 hover:bg-slate-50 disabled:bg-slate-100 disabled:text-slate-400 text-slate-700 px-3 py-1.5 rounded-lg font-bold shadow-2xs transition cursor-pointer"
             >
-              <Printer className="w-3.5 h-3.5 text-slate-500" />
-              <span>Print/PDF</span>
+              <Download className={`w-3.5 h-3.5 ${isPdfLoading ? 'animate-bounce text-blue-600' : 'text-slate-500'}`} />
+              <span>{isPdfLoading ? 'Generating...' : 'Download as PDF'}</span>
             </button>
 
             <div className="h-4 w-[1px] bg-slate-200" />
@@ -699,40 +848,21 @@ export default function ReportingCommandCenter({
               <FileDown className="w-3.5 h-3.5 text-blue-600" />
               <span>Export KPIs</span>
             </button>
-
-            {/* Export Current active table */}
-            <button
-              onClick={handleExportTableCSV}
-              disabled={isLoading || !ownerReport}
-              title="Download currently loaded dashboard grid tables as CSV"
-              className="flex items-center gap-1.5 text-xs bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 disabled:text-slate-400 text-white px-3.5 py-1.5 rounded-lg font-black shadow-sm transition cursor-pointer"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>Export Grid Table</span>
-            </button>
           </div>
         </div>
 
         {/* Filters Panel Grid */}
-        <div className={`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 ${forcedView ? 'xl:grid-cols-5' : 'xl:grid-cols-6'} gap-4 pt-5`} id="toolbar-filters-grid">
-          {/* Filter 1: Dashboard Selector */}
+        <div className={`grid grid-cols-1 sm:grid-cols-2 ${forcedView ? 'lg:grid-cols-2' : 'lg:grid-cols-3'} gap-4 pt-5`} id="toolbar-filters-grid">
+          {/* Filter 1: Dashboard label — only shown on General Dashboard (no forcedView), single option so no selector needed */}
           {!forcedView && (
             <div className="space-y-1.5 flex flex-col justify-end">
               <label className="text-[10px] font-extrabold uppercase tracking-widest text-[#64748B] flex items-center gap-1 select-none">
                 <FileSpreadsheet className="w-3.5 h-3.5 text-[#1D4ED8]" />
                 Dashboard View
               </label>
-              <select
-                value={dashboardType}
-                onChange={(e) => setDashboardType(e.target.value as any)}
-                className="bg-[#F8FAFC] border border-slate-200 hover:border-slate-300 rounded-lg py-2 px-3 text-xs text-slate-800 font-extrabold focus:outline-none w-full transition select-none cursor-pointer"
-              >
-                <option value="overview">Overview Dashboard</option>
-                <option value="opportunity">Opportunity Dashboard</option>
-                <option value="sales">Sales Dashboard</option>
-                <option value="owner">Owner Dashboard</option>
-                <option value="marketing">Marketing Dashboard</option>
-              </select>
+              <div className="bg-[#F8FAFC] border border-slate-200 rounded-lg py-2 px-3 text-xs text-slate-800 font-extrabold w-full select-none">
+                Overview Dashboard
+              </div>
             </div>
           )}
 
@@ -776,65 +906,6 @@ export default function ReportingCommandCenter({
             </select>
           </div>
 
-          {/* Filter 4: User/Rep filter */}
-          <div className="space-y-1.5 flex flex-col justify-end">
-            <label className="text-[10px] font-extrabold uppercase tracking-widest text-[#64748B] flex items-center gap-1 select-none">
-              <UserCircle2 className="w-3.5 h-3.5 text-[#1D4ED8]" />
-              User / Sales Rep
-            </label>
-            <select
-              value={selectedRep}
-              onChange={(e) => setSelectedRep(e.target.value)}
-              className="bg-[#F8FAFC] border border-slate-200 hover:border-slate-300 rounded-lg py-2 px-3 text-xs font-semibold text-slate-705 focus:outline-none w-full cursor-pointer"
-            >
-              <option value="">All Team Assignees</option>
-              <option value="usr_001">Marcus Sterling (Owner)</option>
-              <option value="usr_002">Sarah Jenkins (Closer)</option>
-              <option value="usr_003">Devon Carter (Rep)</option>
-              <option value="usr_004">Isabella Cruz (Closer)</option>
-            </select>
-          </div>
-
-          {/* Filter 5: Source Filter */}
-          <div className="space-y-1.5 flex flex-col justify-end">
-            <label className="text-[10px] font-extrabold uppercase tracking-widest text-[#64748B] flex items-center gap-1 select-none">
-              <Share2 className="w-3.5 h-3.5 text-[#1D4ED8]" />
-              Lead Attribution Source
-            </label>
-            <select
-              value={selectedSource}
-              onChange={(e) => setSelectedSource(e.target.value)}
-              className="bg-[#F8FAFC] border border-slate-200 hover:border-slate-300 rounded-lg py-2 px-3 text-xs font-semibold text-slate-705 focus:outline-none w-full cursor-pointer"
-            >
-              <option value="">All Lead Sources</option>
-              <option value="Google Local Service Ads">Google Local Service Ads</option>
-              <option value="Facebook Ads">Facebook Ads</option>
-              <option value="Google Search Organic">Google Search Organic</option>
-              <option value="Referral">Referral Loyalty</option>
-              <option value="Yelp Organic">Yelp Organic</option>
-              <option value="Instagram Ads">Instagram Ads</option>
-            </select>
-          </div>
-
-          {/* Filter 6: Campaign Filter */}
-          <div className="space-y-1.5 flex flex-col justify-end">
-            <label className="text-[10px] font-extrabold uppercase tracking-widest text-[#64748B] flex items-center gap-1 select-none">
-              <Megaphone className="w-3.5 h-3.5 text-[#1D4ED8]" />
-              UTM Campaign Filter
-            </label>
-            <select
-              value={selectedCampaign}
-              onChange={(e) => setSelectedCampaign(e.target.value)}
-              className="bg-[#F8FAFC] border border-slate-200 hover:border-slate-300 rounded-lg py-2 px-3 text-xs font-semibold text-slate-750 focus:outline-none w-full cursor-pointer"
-            >
-              <option value="">All Marketing Campaigns</option>
-              <option value="Backyard Oasis Inbound Promo">Backyard Oasis Inbound Promo</option>
-              <option value="Summer Hot Tub Blast 2026">Summer Hot Tub Blast 2026</option>
-              <option value="Organic SEO Website Funnel">Organic SEO Website Funnel</option>
-              <option value="Facebook Direct Retargeting Leads">Facebook Direct Retargeting Leads</option>
-              <option value="Yelp Local High-Intent Referrals">Yelp Local High-Intent Referrals</option>
-            </select>
-          </div>
         </div>
 
         {/* FEATURE 7 & 8: ACTIVE FILTERS SUMMARY & CLEAR FILTERS BANNER */}
@@ -869,45 +940,41 @@ export default function ReportingCommandCenter({
           </div>
         )}
 
-        {/* Dynamic Warning and Unavailable Metrics row */}
-        {responseContext && (responseContext.warnings.length > 0 || responseContext.unavailableMetrics.length > 0) && (
-          <div className="mt-4 pt-3 border-t border-slate-100 flex flex-col md:flex-row gap-3">
-            {responseContext.warnings.length > 0 && (
-              <div className="bg-amber-50 border border-amber-100 rounded-lg p-3 flex-1 flex items-start gap-2 text-xs text-amber-800 animate-fade-in">
-                <AlertOctagon className="w-4 h-4 shrink-0 mt-0.5" />
-                <div className="space-y-0.5">
-                  <strong className="font-bold">Active API Warnings:</strong>
-                  <ul className="list-disc pl-4 space-y-0.5">
-                    {responseContext.warnings.map((w, idx) => (
-                      <li key={idx} className="font-medium text-[11px]">{w}</li>
-                    ))}
-                  </ul>
-                </div>
+        {/* API Warnings row */}
+        {responseContext && responseContext.warnings.length > 0 && (
+          <div className="mt-4 pt-3 border-t border-slate-100">
+            <div className="bg-amber-50 border border-amber-100 rounded-lg p-3 flex items-start gap-2 text-xs text-amber-800 animate-fade-in">
+              <AlertOctagon className="w-4 h-4 shrink-0 mt-0.5" />
+              <div className="space-y-0.5">
+                <strong className="font-bold">Active API Warnings:</strong>
+                <ul className="list-disc pl-4 space-y-0.5">
+                  {responseContext.warnings.map((w, idx) => (
+                    <li key={idx} className="font-medium text-[11px]">{w}</li>
+                  ))}
+                </ul>
               </div>
-            )}
-
-            {responseContext.unavailableMetrics.length > 0 && (
-              <div className="bg-slate-50 border border-slate-220 rounded-lg p-3 flex-1 flex items-start gap-2 text-xs text-slate-600 animate-fade-in">
-                <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5 text-slate-400" />
-                <div className="space-y-0.5">
-                  <strong className="font-bold">Unavailable Telemetry Metrics:</strong>
-                  <p className="text-[10px] text-slate-500 mb-1">These metrics are not synced or require OAuth/Ad Manager permissions:</p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {responseContext.unavailableMetrics.map((m, idx) => (
-                      <span key={idx} className="bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold text-slate-500 uppercase">
-                        {m}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
+            </div>
           </div>
         )}
       </div>
 
       {/* Main Switching Content Area */}
-      {isLoading || !ownerReport || !marketingReport ? (
+      {isEstimatesView ? (
+        isEstimatesLoading ? (
+          <div className="bg-white border border-[#E2E8F0] rounded-xl p-20 flex flex-col items-center justify-center space-y-3">
+            <RefreshCw className="w-8 h-8 text-[#1D4ED8] animate-spin" />
+            <span className="text-xs font-bold text-slate-600 uppercase tracking-widest">Loading invoices &amp; estimates...</span>
+          </div>
+        ) : !estimatesReport ? (
+          <div className="bg-white border border-[#E2E8F0] rounded-xl p-20 flex flex-col items-center justify-center space-y-3 text-slate-400">
+            <span className="text-xs font-semibold">No estimates or invoice data available for this period.</span>
+          </div>
+        ) : (
+          <div className="transition-all duration-350" id="command-center-dashboard-stage">
+            <EstimatesInvoicesDashboardView reportData={estimatesReport} />
+          </div>
+        )
+      ) : isLoading || !ownerReport || !marketingReport || !appointmentReport ? (
         <div className="bg-white border border-[#E2E8F0] rounded-xl p-20 flex flex-col items-center justify-center space-y-3" id="command-center-loading">
           <RefreshCw className="w-8 h-8 text-[#1D4ED8] animate-spin" />
           <span className="text-xs font-bold text-slate-600 uppercase tracking-widest">Compiling dynamic performance datasets...</span>
@@ -923,11 +990,18 @@ export default function ReportingCommandCenter({
           {dashboardType === 'sales' && (
             <SalesDashboardView reportData={ownerReport} />
           )}
-          {dashboardType === 'owner' && (
-            <OwnerDashboardView reportData={ownerReport} />
+          {dashboardType === 'appointment' && (
+            <AppointmentDashboardView reportData={appointmentReport} />
           )}
           {dashboardType === 'marketing' && (
-            <MarketingDashboardView reportData={marketingReport} />
+            <MarketingDashboardView
+              reportData={marketingReport}
+              ga4Integration={ga4Integration}
+              ga4Report={ga4Report}
+              isGa4Loading={isGa4Loading}
+              token={token}
+              onGA4Refresh={() => setGa4RefreshSeq(prev => prev + 1)}
+            />
           )}
         </div>
       )}

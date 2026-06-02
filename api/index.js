@@ -985,7 +985,7 @@ async function fetchAllContacts(workspaceId) {
   const all = [];
   let startAfterId = "";
   let startAfter = "";
-  for (let page = 0; page < 10; page++) {
+  for (let page = 0; page < 50; page++) {
     const params = { limit: "100" };
     if (startAfterId) {
       params.startAfterId = startAfterId;
@@ -1429,6 +1429,252 @@ async function computeLiveMarketingReport(workspaceId, filters = {}) {
 function totalWon(opps) {
   return opps.filter((o) => o.status === "won").length;
 }
+async function fetchAllEstimates(workspaceId, opts = {}) {
+  const all = [];
+  for (let page = 1; page <= 50; page++) {
+    const p = new URLSearchParams({ limit: "100", page: String(page) });
+    if (opts.startDate) p.set("startDate", opts.startDate);
+    if (opts.endDate) p.set("endDate", opts.endDate);
+    const res = await fetchFromGHLAPI(`estimates/?${p}`, workspaceId);
+    const batch = res.data?.estimates ?? [];
+    all.push(...batch);
+    if (batch.length < 100 || !res.data?.meta?.nextPage) break;
+  }
+  return all;
+}
+async function fetchAllInvoicesGHL(workspaceId, opts = {}) {
+  const all = [];
+  for (let page = 1; page <= 50; page++) {
+    const p = new URLSearchParams({ limit: "100", page: String(page) });
+    if (opts.startDate) p.set("startDate", opts.startDate);
+    if (opts.endDate) p.set("endDate", opts.endDate);
+    const res = await fetchFromGHLAPI(`invoices/?${p}`, workspaceId);
+    const batch = res.data?.invoices ?? [];
+    all.push(...batch);
+    if (batch.length < 100 || !res.data?.meta?.nextPage) break;
+  }
+  return all;
+}
+async function computeLiveEstimatesInvoicesReport(workspaceId, filters = {}) {
+  const warnings = [];
+  const unavailableMetrics = ["avgDaysToPayment"];
+  let rawEstimates = [];
+  let rawInvoices = [];
+  await Promise.all([
+    (async () => { try { rawEstimates = await fetchAllEstimates(workspaceId, filters); } catch (err) { warnings.push(`Estimates unavailable: ${err.message}`); unavailableMetrics.push("estimates"); } })(),
+    (async () => { try { rawInvoices = await fetchAllInvoicesGHL(workspaceId, filters); } catch (err) { warnings.push(`Invoices unavailable: ${err.message}`); unavailableMetrics.push("invoices"); } })()
+  ]);
+  const estByStatus = {};
+  for (const e of rawEstimates) {
+    const s = (e.status || "UNKNOWN").toUpperCase();
+    if (!estByStatus[s]) estByStatus[s] = { count: 0, value: 0 };
+    estByStatus[s].count++;
+    estByStatus[s].value += Number(e.total) || 0;
+  }
+  const estSent = rawEstimates.filter(e => (e.status || "").toUpperCase() !== "DRAFT");
+  const estSentCount = estSent.length;
+  const estSentValue = estSent.reduce((s, e) => s + (Number(e.total) || 0), 0);
+  const estViewed = rawEstimates.filter(e => ["VIEWED", "ACCEPTED", "REJECTED", "CONVERTED"].includes((e.status || "").toUpperCase())).length;
+  const estAccepted = rawEstimates.filter(e => (e.status || "").toUpperCase() === "ACCEPTED").length;
+  const estRejected = rawEstimates.filter(e => (e.status || "").toUpperCase() === "REJECTED").length;
+  const estConverted = rawEstimates.filter(e => (e.status || "").toUpperCase() === "CONVERTED").length;
+  const estExpired = rawEstimates.filter(e => (e.status || "").toUpperCase() === "EXPIRED").length;
+  const invByStatus = {};
+  for (const inv of rawInvoices) {
+    const s = (inv.status || "UNKNOWN").toUpperCase();
+    if (!invByStatus[s]) invByStatus[s] = { count: 0, value: 0, amountPaid: 0, amountDue: 0 };
+    invByStatus[s].count++;
+    invByStatus[s].value += Number(inv.total) || 0;
+    invByStatus[s].amountPaid += Number(inv.amountPaid) || 0;
+    invByStatus[s].amountDue += Number(inv.amountDue) || 0;
+  }
+  const invBillable = rawInvoices.filter(i => !["DRAFT", "CANCELLED"].includes((i.status || "").toUpperCase()));
+  const invTotalValue = invBillable.reduce((s, i) => s + (Number(i.total) || 0), 0);
+  const invTotalPaid = rawInvoices.reduce((s, i) => s + (Number(i.amountPaid) || 0), 0);
+  const invTotalOutstanding = rawInvoices.reduce((s, i) => s + (Number(i.amountDue) || 0), 0);
+  const now = Date.now();
+  const aging = { current: { count: 0, value: 0 }, days1to30: { count: 0, value: 0 }, days31to60: { count: 0, value: 0 }, days61plus: { count: 0, value: 0 } };
+  const unpaidList = [];
+  for (const inv of rawInvoices) {
+    const amtDue = Number(inv.amountDue) || 0;
+    if (amtDue <= 0) continue;
+    const dueMs = inv.dueDate ? new Date(inv.dueDate).getTime() : null;
+    const daysOverdue = dueMs ? Math.max(0, Math.floor((now - dueMs) / 864e5)) : 0;
+    const notYetDue = !dueMs || dueMs > now;
+    if (notYetDue)            { aging.current.count++;    aging.current.value    += amtDue; }
+    else if (daysOverdue <= 30){ aging.days1to30.count++;  aging.days1to30.value  += amtDue; }
+    else if (daysOverdue <= 60){ aging.days31to60.count++; aging.days31to60.value += amtDue; }
+    else                       { aging.days61plus.count++; aging.days61plus.value += amtDue; }
+    const contactName = inv.contact ? (`${inv.contact.firstName || ""} ${inv.contact.lastName || ""}`.trim() || inv.contact.email || "Unknown") : "Unknown";
+    unpaidList.push({ id: inv.id, invoiceNumber: inv.number || "", name: inv.name || inv.description || "", contactName, contactEmail: inv.contact?.email || "", amountDue: amtDue, total: Number(inv.total) || 0, dueDate: inv.dueDate || "", issueDate: inv.issueDate || "", daysOverdue, status: inv.status || "" });
+  }
+  unpaidList.sort((a, b) => b.daysOverdue - a.daysOverdue || b.amountDue - a.amountDue);
+  return {
+    data: {
+      estimates: { totalCount: rawEstimates.length, totalValue: rawEstimates.reduce((s, e) => s + (Number(e.total) || 0), 0), byStatus: estByStatus, funnel: { sent: estSentCount, sentValue: estSentValue, viewed: estViewed, viewRate: estSentCount > 0 ? Math.round(estViewed / estSentCount * 100) : 0, accepted: estAccepted, acceptanceRate: estSentCount > 0 ? Math.round(estAccepted / estSentCount * 100) : 0, rejected: estRejected, rejectionRate: estSentCount > 0 ? Math.round(estRejected / estSentCount * 100) : 0, converted: estConverted, conversionRate: estSentCount > 0 ? Math.round(estConverted / estSentCount * 100) : 0, expired: estExpired } },
+      invoices: { totalCount: rawInvoices.length, totalValue: invTotalValue, totalPaid: invTotalPaid, totalOutstanding: invTotalOutstanding, collectionRate: invTotalValue > 0 ? Math.round(invTotalPaid / invTotalValue * 100) : 0, avgInvoiceValue: invBillable.length > 0 ? Math.round(invTotalValue / invBillable.length) : 0, byStatus: invByStatus, aging, unpaidList },
+      crossMetrics: { estimateToInvoiceRate: estSentCount > 0 ? Math.round(estConverted / estSentCount * 100) : 0 },
+      warnings, unavailableMetrics
+    }, warnings, unavailableMetrics
+  };
+}
+async function computeLiveAppointmentReport(workspaceId, filters = {}) {
+  const warnings = [];
+  const unavailableMetrics = [];
+  let locationId = "";
+  try {
+    const auth = resolveGHLAuthentication(workspaceId);
+    locationId = auth.locationId;
+  } catch (err) {
+    throw new Error(`AUTH_ERROR: ${err.message}`);
+  }
+  const now = Date.now();
+  const defaultMs = 30 * 24 * 60 * 60 * 1000;
+  const startMs = filters.startDate ? new Date(filters.startDate).getTime() : now - defaultMs;
+  const endMs = filters.endDate ? new Date(filters.endDate + "T23:59:59.999Z").getTime() : now;
+  let allAppointments = [];
+  let calendarMetas = [];
+  try {
+    const calRes = await fetchFromGHLAPI("calendars/", workspaceId);
+    calendarMetas = (calRes.data?.calendars || []).slice(0, 10).map((c) => ({ id: c.id, name: c.name || c.id }));
+    if (calendarMetas.length === 0) {
+      warnings.push("No calendars found for this location — appointment data unavailable.");
+      unavailableMetrics.push("appointments");
+    } else {
+      await Promise.all(calendarMetas.map(async (cal) => {
+        try {
+          const evRes = await fetchFromGHLAPI(
+            `calendars/events?calendarId=${encodeURIComponent(cal.id)}&startTime=${startMs}&endTime=${endMs}`,
+            workspaceId
+          );
+          (evRes.data?.events || []).forEach((e) => {
+            allAppointments.push({
+              id: e.id,
+              title: e.title || "Appointment",
+              appointmentStatus: mapAppointmentStatus(e.appointmentStatus || e.status || ""),
+              startTime: e.startTime || new Date().toISOString(),
+              userId: e.userId || "",
+              contactId: e.contactId || "",
+              calendarId: cal.id,
+              calendarName: cal.name
+            });
+          });
+        } catch { }
+      }));
+    }
+  } catch (err) {
+    warnings.push(`Calendar fetch failed: ${err.message}`);
+    unavailableMetrics.push("appointments");
+  }
+  const userNameMap = /* @__PURE__ */ new Map();
+  try {
+    const companyId = process.env.GHL_COMPANY_ID || "";
+    if (companyId) {
+      const uRes = await fetchFromGHLAPI(`users/search?companyId=${encodeURIComponent(companyId)}`, workspaceId);
+      (uRes.data?.users || []).forEach((u) => {
+        userNameMap.set(u.id, `${u.firstName || ""} ${u.lastName || ""}`.trim() || u.id);
+      });
+    }
+  } catch { }
+  const filtered = filters.userId ? allAppointments.filter((a) => a.userId === filters.userId) : allAppointments;
+  const showed = filtered.filter((a) => a.appointmentStatus === "showed").length;
+  const noshow = filtered.filter((a) => a.appointmentStatus === "noshow").length;
+  const cancelled = filtered.filter((a) => a.appointmentStatus === "cancelled").length;
+  const confirmed = filtered.filter((a) => a.appointmentStatus === "confirmed").length;
+  const total = filtered.length;
+  const upcoming = filtered.filter((a) => new Date(a.startTime).getTime() > now).length;
+  const showDenom = showed + noshow;
+  const calMap = /* @__PURE__ */ new Map();
+  filtered.forEach((a) => {
+    const cur = calMap.get(a.calendarId) || { name: a.calendarName, total: 0, showed: 0, noshow: 0, cancelled: 0, confirmed: 0 };
+    cur.total++;
+    if (a.appointmentStatus === "showed") cur.showed++;
+    else if (a.appointmentStatus === "noshow") cur.noshow++;
+    else if (a.appointmentStatus === "cancelled") cur.cancelled++;
+    else cur.confirmed++;
+    calMap.set(a.calendarId, cur);
+  });
+  const repMap = /* @__PURE__ */ new Map();
+  filtered.forEach((a) => {
+    const uid = a.userId || "unknown";
+    const cur = repMap.get(uid) || { total: 0, showed: 0, noshow: 0, cancelled: 0 };
+    cur.total++;
+    if (a.appointmentStatus === "showed") cur.showed++;
+    else if (a.appointmentStatus === "noshow") cur.noshow++;
+    else if (a.appointmentStatus === "cancelled") cur.cancelled++;
+    repMap.set(uid, cur);
+  });
+  const seg = (endMs - startMs) / 4;
+  const tBuckets = [{ booked: 0, showed: 0, noshow: 0 }, { booked: 0, showed: 0, noshow: 0 }, { booked: 0, showed: 0, noshow: 0 }, { booked: 0, showed: 0, noshow: 0 }];
+  filtered.forEach((a) => {
+    const t = new Date(a.startTime).getTime();
+    const idx = Math.min(3, Math.floor((t - startMs) / seg));
+    if (idx >= 0) {
+      tBuckets[idx].booked++;
+      if (a.appointmentStatus === "showed") tBuckets[idx].showed++;
+      else if (a.appointmentStatus === "noshow") tBuckets[idx].noshow++;
+    }
+  });
+  const report = {
+    summary: {
+      totalBooked: total,
+      totalShowed: showed,
+      totalNoShow: noshow,
+      totalCancelled: cancelled,
+      totalConfirmed: confirmed,
+      showRate: showDenom > 0 ? Math.round(showed / showDenom * 100) : 0,
+      noShowRate: showDenom > 0 ? Math.round(noshow / showDenom * 100) : 0,
+      cancellationRate: total > 0 ? Math.round(cancelled / total * 100) : 0,
+      upcomingCount: upcoming
+    },
+    statusDistribution: [
+      { status: "Showed", count: showed },
+      { status: "No-Show", count: noshow },
+      { status: "Cancelled", count: cancelled },
+      { status: "Confirmed", count: confirmed }
+    ].filter((s) => s.count > 0),
+    calendarBreakdown: Array.from(calMap.entries()).map(([calId, d]) => ({
+      calendarId: calId,
+      calendarName: d.name,
+      total: d.total,
+      showed: d.showed,
+      noshow: d.noshow,
+      cancelled: d.cancelled,
+      confirmed: d.confirmed,
+      showRate: (d.showed + d.noshow) > 0 ? Math.round(d.showed / (d.showed + d.noshow) * 100) : 0
+    })),
+    repBreakdown: Array.from(repMap.entries()).map(([userId, d]) => ({
+      userId,
+      userName: userNameMap.get(userId) || userId,
+      booked: d.total,
+      showed: d.showed,
+      noshow: d.noshow,
+      cancelled: d.cancelled,
+      showRate: (d.showed + d.noshow) > 0 ? Math.round(d.showed / (d.showed + d.noshow) * 100) : 0
+    })),
+    upcomingAppointments: filtered
+      .filter((a) => new Date(a.startTime).getTime() > now)
+      .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime())
+      .slice(0, 15)
+      .map((a) => ({
+        id: a.id,
+        title: a.title,
+        startTime: a.startTime,
+        status: a.appointmentStatus,
+        userId: a.userId,
+        userName: userNameMap.get(a.userId) || void 0,
+        calendarId: a.calendarId,
+        calendarName: a.calendarName
+      })),
+    trends: ["Wk 1", "Wk 2", "Wk 3", "Wk 4"].map((date, i) => ({
+      date,
+      booked: tBuckets[i].booked,
+      showed: tBuckets[i].showed,
+      noshow: tBuckets[i].noshow
+    }))
+  };
+  return { data: report, warnings, unavailableMetrics };
+}
 var LiveReportingService = class {
   static async getOverviewDashboardReport(workspaceId, filters = {}) {
     const isProd = process.env.NODE_ENV === "production";
@@ -1436,13 +1682,13 @@ var LiveReportingService = class {
     if (settings.mode === "MOCK") {
       return { source: "mock", data: getDashboardMetrics(), warnings: [], unavailableMetrics: [], stale: false };
     }
-    const cached = getReportCache(workspaceId, "overview");
+    const cached = getReportCache(workspaceId, `overview_${filters.startDate||""}_${filters.endDate||""}`);
     if (cached && !cached.stale) {
       return { source: "live", data: cached.data, warnings: [], unavailableMetrics: [], stale: false };
     }
     try {
       const computed = await computeLiveOverviewReport(workspaceId, filters);
-      setReportCache(workspaceId, "overview", computed);
+      setReportCache(workspaceId, `overview_${filters.startDate||""}_${filters.endDate||""}`, computed);
       return { source: "live", data: computed, warnings: computed.warnings, unavailableMetrics: computed.unavailableMetrics, stale: false };
     } catch (err) {
       console.error("[LiveReportingService] Overview failed:", err.message);
@@ -1458,13 +1704,13 @@ var LiveReportingService = class {
     if (settings.mode === "MOCK") {
       return { source: "mock", data: getDashboardMetrics(), warnings: [], unavailableMetrics: [], stale: false };
     }
-    const cached = getReportCache(workspaceId, "opportunity");
+    const cached = getReportCache(workspaceId, `opportunity_${filters.startDate||""}_${filters.endDate||""}`);
     if (cached && !cached.stale) {
       return { source: "live", data: cached.data, warnings: [], unavailableMetrics: [], stale: false };
     }
     try {
       const computed = await computeLiveOpportunityReport(workspaceId, filters);
-      setReportCache(workspaceId, "opportunity", computed);
+      setReportCache(workspaceId, `opportunity_${filters.startDate||""}_${filters.endDate||""}`, computed);
       return { source: "live", data: computed, warnings: computed.warnings, unavailableMetrics: computed.unavailableMetrics, stale: false };
     } catch (err) {
       console.error("[LiveReportingService] Opportunity failed:", err.message);
@@ -1480,13 +1726,13 @@ var LiveReportingService = class {
     if (settings.mode === "MOCK") {
       return { source: "mock", data: getDashboardMetrics(), warnings: [], unavailableMetrics: [], stale: false };
     }
-    const cached = getReportCache(workspaceId, "sales");
+    const cached = getReportCache(workspaceId, `sales_${filters.startDate||""}_${filters.endDate||""}`);
     if (cached && !cached.stale) {
       return { source: "live", data: cached.data, warnings: [], unavailableMetrics: [], stale: false };
     }
     try {
       const computed = await computeLiveSalesReport(workspaceId, filters);
-      setReportCache(workspaceId, "sales", computed);
+      setReportCache(workspaceId, `sales_${filters.startDate||""}_${filters.endDate||""}`, computed);
       return { source: "live", data: computed, warnings: computed.warnings, unavailableMetrics: computed.unavailableMetrics, stale: false };
     } catch (err) {
       console.error("[LiveReportingService] Sales failed:", err.message);
@@ -1502,7 +1748,7 @@ var LiveReportingService = class {
     if (settings.mode === "MOCK") {
       return { source: "mock", data: getOwnerPerformanceReport(filters), warnings: [], unavailableMetrics: [], stale: false };
     }
-    const cacheKey = `owner_${filters.userId || "all"}_${filters.source || "all"}`;
+    const cacheKey = `owner_${filters.userId||"all"}_${filters.source||"all"}_${filters.startDate||""}_${filters.endDate||""}`;
     const cached = getReportCache(workspaceId, cacheKey);
     if (cached && !cached.stale) {
       return { source: "live", data: cached.data, warnings: [], unavailableMetrics: [], stale: false };
@@ -1525,7 +1771,7 @@ var LiveReportingService = class {
     if (settings.mode === "MOCK") {
       return { source: "mock", data: getMarketingPerformanceReport(filters), warnings: [], unavailableMetrics: [], stale: false };
     }
-    const cacheKey = `marketing_${filters.source || "all"}_${filters.campaign || "all"}`;
+    const cacheKey = `marketing_${filters.source||"all"}_${filters.campaign||"all"}_${filters.startDate||""}_${filters.endDate||""}`;
     const cached = getReportCache(workspaceId, cacheKey);
     if (cached && !cached.stale) {
       return { source: "live", data: cached.data, warnings: [], unavailableMetrics: [], stale: false };
@@ -1542,7 +1788,139 @@ var LiveReportingService = class {
       return { source: "mock", data: getMarketingPerformanceReport(filters), warnings: [`Dev fallback: ${err.message}`], unavailableMetrics: [], stale: false };
     }
   }
+  static async getEstimatesInvoicesReport(workspaceId, filters = {}) {
+    const isProd = process.env.NODE_ENV === "production";
+    const settings = db.getReportingSettings(workspaceId);
+    if (settings.mode === "MOCK") {
+      const now = Date.now();
+      const d = (daysAgo) => new Date(now - daysAgo * 864e5).toISOString();
+      const mockData = {
+        estimates: { totalCount: 45, totalValue: 543500, byStatus: { DRAFT: { count: 5, value: 48500 }, SENT: { count: 12, value: 156000 }, VIEWED: { count: 8, value: 104200 }, ACCEPTED: { count: 9, value: 118500 }, REJECTED: { count: 4, value: 42000 }, CONVERTED: { count: 6, value: 64800 }, EXPIRED: { count: 1, value: 9500 } }, funnel: { sent: 40, sentValue: 495000, viewed: 27, viewRate: 68, accepted: 9, acceptanceRate: 23, rejected: 4, rejectionRate: 10, converted: 6, conversionRate: 15, expired: 1 } },
+        invoices: {
+          totalCount: 31, totalValue: 400500, totalPaid: 214000, totalOutstanding: 186000, collectionRate: 53, avgInvoiceValue: 14304,
+          byStatus: { DRAFT: { count: 2, value: 24000, amountPaid: 0, amountDue: 24000 }, SENT: { count: 6, value: 87500, amountPaid: 0, amountDue: 87500 }, PAID: { count: 14, value: 196000, amountPaid: 196000, amountDue: 0 }, PARTIAL: { count: 3, value: 48000, amountPaid: 18000, amountDue: 30000 }, OVERDUE: { count: 5, value: 68500, amountPaid: 0, amountDue: 68500 }, CANCELLED: { count: 1, value: 8500, amountPaid: 0, amountDue: 0 } },
+          aging: { current: { count: 4, value: 38000 }, days1to30: { count: 4, value: 52000 }, days31to60: { count: 3, value: 54000 }, days61plus: { count: 3, value: 42000 } },
+          unpaidList: [
+            { id: "inv_m1", invoiceNumber: "INV-0041", name: "Inground Pool Construction",   contactName: "James & Amanda Holloway", contactEmail: "holloway@email.com",    amountDue: 18200, total: 18200, dueDate: d(75),  issueDate: d(105), daysOverdue: 75, status: "OVERDUE"  },
+            { id: "inv_m2", invoiceNumber: "INV-0038", name: "Pool Renovation & Tile Work",  contactName: "Westside Properties LLC",  contactEmail: "billing@westside.com", amountDue: 14800, total: 14800, dueDate: d(45),  issueDate: d(75),  daysOverdue: 45, status: "OVERDUE"  },
+            { id: "inv_m3", invoiceNumber: "INV-0040", name: "Spa Installation Package",    contactName: "Carter Residence",         contactEmail: "carter@home.net",      amountDue: 12400, total: 12400, dueDate: d(35),  issueDate: d(65),  daysOverdue: 35, status: "OVERDUE"  },
+            { id: "inv_m4", invoiceNumber: "INV-0039", name: "Commercial Pool Service",     contactName: "Apex Athletic Club",       contactEmail: "ops@apexclub.com",     amountDue: 23100, total: 23100, dueDate: d(22),  issueDate: d(52),  daysOverdue: 22, status: "OVERDUE"  },
+            { id: "inv_m5", invoiceNumber: "INV-0043", name: "Pool Deck & Coping Work",     contactName: "Rivera Family Trust",      contactEmail: "rivera@email.com",     amountDue: 8750,  total: 17500, dueDate: d(15),  issueDate: d(45),  daysOverdue: 15, status: "PARTIAL"  },
+            { id: "inv_m6", invoiceNumber: "INV-0044", name: "Equipment Upgrade Package",   contactName: "Blue Water Estates",       contactEmail: "bwe@estates.com",      amountDue: 7200,  total: 7200,  dueDate: d(8),   issueDate: d(38),  daysOverdue: 8,  status: "SENT"    },
+            { id: "inv_m7", invoiceNumber: "INV-0045", name: "Pool Cleaning Annual Plan",   contactName: "Henderson Household",      contactEmail: "henderson@mail.com",   amountDue: 5500,  total: 5500,  dueDate: d(-5),  issueDate: d(25),  daysOverdue: 0,  status: "SENT"    },
+            { id: "inv_m8", invoiceNumber: "INV-0046", name: "Leak Detection & Repair",     contactName: "Davidson Properties",      contactEmail: "davidson@prop.net",    amountDue: 14500, total: 29000, dueDate: d(-12), issueDate: d(18),  daysOverdue: 0,  status: "PARTIAL" }
+          ]
+        },
+        crossMetrics: { estimateToInvoiceRate: 15 },
+        warnings: [], unavailableMetrics: ["avgDaysToPayment"]
+      };
+      return { source: "mock", data: mockData, warnings: [], unavailableMetrics: ["avgDaysToPayment"], stale: false };
+    }
+    const cacheKey = `estimates_invoices_${filters.startDate || ""}_${filters.endDate || ""}`;
+    const cached = getReportCache(workspaceId, cacheKey);
+    if (cached && !cached.stale) return { source: "live", data: cached.data, warnings: [], unavailableMetrics: [], stale: false };
+    try {
+      const result = await computeLiveEstimatesInvoicesReport(workspaceId, filters);
+      setReportCache(workspaceId, cacheKey, result.data);
+      return { source: "live", data: result.data, warnings: result.warnings, unavailableMetrics: result.unavailableMetrics, stale: false };
+    } catch (err) {
+      console.error("[LiveReportingService] EstimatesInvoices failed:", err.message);
+      if (isProd) return { source: "live", data: null, error: err.message, warnings: [`Live data unavailable: ${err.message}`], unavailableMetrics: ["all"], stale: false };
+      return { source: "live", data: null, warnings: [`Dev fallback: ${err.message}`], unavailableMetrics: [], stale: false };
+    }
+  }
+  static async getAppointmentDashboardReport(workspaceId, filters = {}) {
+    const isProd = process.env.NODE_ENV === "production";
+    const settings = db.getReportingSettings(workspaceId);
+    if (settings.mode === "MOCK") {
+      const mockData = {
+        summary: { totalBooked: 58, totalShowed: 42, totalNoShow: 9, totalCancelled: 7, totalConfirmed: 0, showRate: 82, noShowRate: 18, cancellationRate: 12, upcomingCount: 14 },
+        statusDistribution: [{ status: "Showed", count: 42 }, { status: "No-Show", count: 9 }, { status: "Cancelled", count: 7 }],
+        calendarBreakdown: [
+          { calendarId: "cal_main", calendarName: "Sales Consultations", total: 32, showed: 25, noshow: 5, cancelled: 2, confirmed: 0, showRate: 83 },
+          { calendarId: "cal_pool", calendarName: "Pool Inspections", total: 18, showed: 13, noshow: 3, cancelled: 2, confirmed: 0, showRate: 81 },
+          { calendarId: "cal_follow", calendarName: "Follow-Up Calls", total: 8, showed: 4, noshow: 1, cancelled: 3, confirmed: 0, showRate: 80 }
+        ],
+        repBreakdown: [
+          { userId: "usr_001", userName: "Marcus Sterling", booked: 18, showed: 15, noshow: 2, cancelled: 1, showRate: 88 },
+          { userId: "usr_002", userName: "Sarah Jenkins", booked: 22, showed: 16, noshow: 4, cancelled: 2, showRate: 80 },
+          { userId: "usr_003", userName: "Devon Carter", booked: 12, showed: 8, noshow: 2, cancelled: 2, showRate: 80 },
+          { userId: "usr_004", userName: "Isabella Cruz", booked: 6, showed: 3, noshow: 1, cancelled: 2, showRate: 75 }
+        ],
+        upcomingAppointments: [
+          { id: "apt_001", title: "Pool Design Consultation — Amanda Ross", startTime: new Date(Date.now() + 2 * 3600000).toISOString(), status: "confirmed", userId: "usr_001", userName: "Marcus Sterling", calendarId: "cal_main", calendarName: "Sales Consultations" },
+          { id: "apt_002", title: "Pool Inspection — Donovan Corp", startTime: new Date(Date.now() + 5 * 3600000).toISOString(), status: "confirmed", userId: "usr_002", userName: "Sarah Jenkins", calendarId: "cal_pool", calendarName: "Pool Inspections" },
+          { id: "apt_003", title: "Inground Spa Quote — Reyes Family", startTime: new Date(Date.now() + 26 * 3600000).toISOString(), status: "confirmed", userId: "usr_001", userName: "Marcus Sterling", calendarId: "cal_main", calendarName: "Sales Consultations" },
+          { id: "apt_004", title: "Remodel Assessment — Holloway Estate", startTime: new Date(Date.now() + 50 * 3600000).toISOString(), status: "confirmed", userId: "usr_003", userName: "Devon Carter", calendarId: "cal_main", calendarName: "Sales Consultations" },
+          { id: "apt_005", title: "Commercial Pool Bid — Park District", startTime: new Date(Date.now() + 74 * 3600000).toISOString(), status: "confirmed", userId: "usr_002", userName: "Sarah Jenkins", calendarId: "cal_main", calendarName: "Sales Consultations" }
+        ],
+        trends: [{ date: "Wk 1", booked: 12, showed: 8, noshow: 3 }, { date: "Wk 2", booked: 16, showed: 12, noshow: 2 }, { date: "Wk 3", booked: 18, showed: 14, noshow: 3 }, { date: "Wk 4", booked: 12, showed: 8, noshow: 1 }]
+      };
+      return { source: "mock", data: mockData, warnings: [], unavailableMetrics: [], stale: false };
+    }
+    const cacheKey = `appointment_${filters.userId || "all"}_${filters.startDate || ""}_${filters.endDate || ""}`;
+    const cached = getReportCache(workspaceId, cacheKey);
+    if (cached && !cached.stale) {
+      return { source: "live", data: cached.data, warnings: [], unavailableMetrics: [], stale: false };
+    }
+    try {
+      const result = await computeLiveAppointmentReport(workspaceId, filters);
+      setReportCache(workspaceId, cacheKey, result.data);
+      return { source: "live", data: result.data, warnings: result.warnings, unavailableMetrics: result.unavailableMetrics, stale: false };
+    } catch (err) {
+      console.error("[LiveReportingService] Appointment failed:", err.message);
+      if (isProd) {
+        return { source: "live", data: null, error: err.message, warnings: [`Live data unavailable: ${err.message}`], unavailableMetrics: ["all"], stale: false };
+      }
+      return { source: "live", data: null, warnings: [`Dev fallback: ${err.message}`], unavailableMetrics: [], stale: false };
+    }
+  }
 };
+
+// GHL SSO helpers — Node built-in crypto, no extra deps
+var import_crypto = require("crypto");
+function decryptGhlPayload(encrypted, passphrase) {
+  const buf = Buffer.from(encrypted, "base64");
+  if (buf.slice(0, 8).toString("ascii") !== "Salted__") throw new Error("Not OpenSSL-salted ciphertext");
+  const salt = buf.slice(8, 16);
+  const ciphertext = buf.slice(16);
+  const pass = Buffer.from(passphrase, "utf8");
+  let derived = Buffer.alloc(0);
+  let block = Buffer.alloc(0);
+  while (derived.length < 48) {
+    block = (0, import_crypto.createHash)("md5").update(Buffer.concat([block, pass, salt])).digest();
+    derived = Buffer.concat([derived, block]);
+  }
+  const key = derived.slice(0, 32);
+  const iv  = derived.slice(32, 48);
+  const decipher = (0, import_crypto.createDecipheriv)("aes-256-cbc", key, iv);
+  const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  return JSON.parse(decrypted.toString("utf8"));
+}
+function mintSsoJwt(payload) {
+  const secret = process.env.GHL_APP_SHARED_SECRET;
+  const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+  const body   = Buffer.from(JSON.stringify({ _src: "ghl_sso", ...payload })).toString("base64url");
+  const sig    = (0, import_crypto.createHmac)("sha256", secret).update(`${header}.${body}`).digest("base64url");
+  return `${header}.${body}.${sig}`;
+}
+function verifySsoJwt(token) {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const [header, body, sig] = parts;
+    const secret = process.env.GHL_APP_SHARED_SECRET;
+    if (!secret) return null;
+    const expected = (0, import_crypto.createHmac)("sha256", secret).update(`${header}.${body}`).digest("base64url");
+    const a = Buffer.from(sig,      "base64url");
+    const b = Buffer.from(expected, "base64url");
+    if (a.length !== b.length || !(0, import_crypto.timingSafeEqual)(a, b)) return null;
+    const pl = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+    if (pl._src !== "ghl_sso") return null;
+    if (pl.exp && pl.exp < Math.floor(Date.now() / 1000)) return null;
+    return pl;
+  } catch { return null; }
+}
 
 // src/supabase.ts
 var import_supabase_js = require("@supabase/supabase-js");
@@ -1790,6 +2168,24 @@ var requireAuth = (allowedRoles) => {
       return res.status(401).json({ status: "error", error: "Authentication required. No session token provided." });
     }
     const token = authHeader.toString().replace("Bearer ", "");
+    const ssoPayload = verifySsoJwt(token);
+    if (ssoPayload) {
+      const workspace = await getWorkspaceById(ssoPayload.workspaceId);
+      if (!workspace) return res.status(401).json({ status: "error", error: "SSO workspace not found." });
+      if (workspace.suspended) return res.status(403).json({ status: "error", error: "Workspace suspended.", suspended: true });
+      const ghlRole = (ssoPayload.ghlRole || "").toLowerCase();
+      const role = ["admin", "owner"].includes(ghlRole) ? "WORKSPACE_OWNER" : "READ_ONLY";
+      if (allowedRoles && allowedRoles.length > 0 && !allowedRoles.includes(role)) {
+        return res.status(403).json({ status: "error", error: "Access Denied: insufficient role." });
+      }
+      req.user = { id: ssoPayload.userId || "ghl_sso", email: ssoPayload.email || "", name: ssoPayload.email || "", onboarded: true, createdAt: new Date().toISOString() };
+      req.workspace = workspace;
+      req.member = null;
+      req.role = role;
+      req.token = token;
+      req.supabaseUserId = ssoPayload.userId || "ghl_sso";
+      return next();
+    }
     const { data: { user: authUser }, error: authError } = await supabaseAdmin.auth.getUser(token);
     if (authError || !authUser) {
       return res.status(401).json({ status: "error", error: "Invalid or expired session token. Please log in again." });
@@ -1815,13 +2211,7 @@ var requireAuth = (allowedRoles) => {
       }
     }
     if (!workspace) {
-      req.user = user;
-      req.workspace = null;
-      req.member = null;
-      req.role = "READ_ONLY" /* READ_ONLY */;
-      req.token = token;
-      req.supabaseUserId = authUser.id;
-      return next();
+      return res.status(403).json({ status: "error", error: "No workspace found for this account. Please contact your administrator." });
     }
     const isSuperAdmin = member?.role === "SUPER_ADMIN" /* SUPER_ADMIN */;
     if (workspace.suspended && !isSuperAdmin) {
@@ -2140,6 +2530,52 @@ app.get("/api/ghl/config", requireAuth(), async (req, res) => {
     webhookLogs: webhookLogs.slice(0, 10)
   });
 });
+app.post("/api/ghl/sso", async (req, res) => {
+  const { encryptedData } = req.body;
+  if (!encryptedData || typeof encryptedData !== "string") {
+    return res.status(400).json({ status: "error", error: "Missing encryptedData" });
+  }
+  const sharedSecret = process.env.GHL_APP_SHARED_SECRET;
+  if (!sharedSecret) {
+    return res.status(500).json({ status: "error", error: "SSO not configured on this server." });
+  }
+  let ghlData;
+  try {
+    ghlData = decryptGhlPayload(encryptedData, sharedSecret);
+  } catch (e) {
+    console.error("[GHL SSO] Decryption failed:", e.message);
+    return res.status(400).json({ status: "error", error: "Invalid or tampered SSO payload." });
+  }
+  const locationId = ghlData.activeLocation || "";
+  if (!locationId) {
+    return res.status(400).json({ status: "error", error: "SSO payload missing activeLocation." });
+  }
+  let workspaceId = null;
+  const { data: connRow } = await supabaseAdmin.from("ghl_connections").select("workspace_id").eq("location_id", locationId).single();
+  if (connRow?.workspace_id) {
+    workspaceId = connRow.workspace_id;
+  } else {
+    const { data: wsRow } = await supabaseAdmin.from("workspaces").select("id").eq("ghl_location_id", locationId).single();
+    if (wsRow?.id) workspaceId = wsRow.id;
+  }
+  if (!workspaceId) {
+    return res.status(403).json({ status: "error", error: "This GHL location is not registered in this app." });
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const token = mintSsoJwt({
+    workspaceId,
+    locationId,
+    email:   ghlData.email  || "",
+    userId:  ghlData.userId || "",
+    ghlRole: ghlData.role   || "user",
+    iat: now,
+    exp: now + 28800
+  });
+  try {
+    await logAction(workspaceId, ghlData.userId || "ghl_sso", ghlData.email || "", "GHL_SSO_LOGIN", `GHL SSO login via location ${locationId}`);
+  } catch { /* non-fatal */ }
+  return res.json({ status: "success", token, workspaceId });
+});
 app.post("/api/ghl/config", requireAuth(["SUPER_ADMIN" /* SUPER_ADMIN */, "WORKSPACE_OWNER" /* WORKSPACE_OWNER */, "ADMIN" /* ADMIN */]), async (req, res) => {
   const config = await getWorkspaceGhlConfig(req.workspace.id);
   if (!canUserManageGhl(req.role, config.allowAdminManageGHL)) return res.status(403).json({ status: "error", error: "Access Denied." });
@@ -2358,6 +2794,386 @@ app.get("/api/reporting/marketing-performance", requireAuth(), async (req, res) 
     return res.status(500).json({ status: "error", source: "mock", generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: err.message });
   }
 });
+app.get("/api/reporting/estimates-invoices", requireAuth(), async (req, res) => {
+  try {
+    await syncGhlToMockDb(req.workspace.id);
+    const startDate = typeof req.query.startDate === "string" ? req.query.startDate : void 0;
+    const endDate   = typeof req.query.endDate   === "string" ? req.query.endDate   : void 0;
+    const warnings = [];
+    if (startDate && !isValidDateString(startDate)) return res.status(400).json({ status: "error", source: "mock", generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: "startDate must be YYYY-MM-DD." });
+    if (endDate   && !isValidDateString(endDate))   return res.status(400).json({ status: "error", source: "mock", generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: "endDate must be YYYY-MM-DD." });
+    const result = await LiveReportingService.getEstimatesInvoicesReport(req.workspace.id, { startDate, endDate });
+    if (result.warnings) warnings.push(...result.warnings);
+    if (!result.data) return res.status(503).json({ status: "error", source: result.source, generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: false, warnings, unavailableMetrics: ["all"], error: result.error || "Live data unavailable" });
+    return res.status(200).json({ status: "success", source: result.source, generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: !!result.stale, warnings, unavailableMetrics: result.unavailableMetrics || [], data: result.data });
+  } catch (err) { return res.status(500).json({ status: "error", source: "mock", generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: err.message }); }
+});
+app.get("/api/reporting/appointment-performance", requireAuth(), async (req, res) => {
+  try {
+    await syncGhlToMockDb(req.workspace.id);
+    const startDate = typeof req.query.startDate === "string" ? req.query.startDate : void 0;
+    const endDate = typeof req.query.endDate === "string" ? req.query.endDate : void 0;
+    const userId = typeof req.query.userId === "string" ? req.query.userId : void 0;
+    const warnings = [];
+    if (startDate && !isValidDateString(startDate)) return res.status(400).json({ status: "error", source: "mock", generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: "startDate must be YYYY-MM-DD." });
+    if (endDate && !isValidDateString(endDate)) return res.status(400).json({ status: "error", source: "mock", generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: "endDate must be YYYY-MM-DD." });
+    const result = await LiveReportingService.getAppointmentDashboardReport(req.workspace.id, { startDate, endDate, userId });
+    if (result.warnings) warnings.push(...result.warnings);
+    if (!result.data) return res.status(503).json({ status: "error", source: result.source, generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: false, warnings, unavailableMetrics: ["all"], error: result.error || "Live data unavailable" });
+    return res.status(200).json({ status: "success", source: result.source, generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: !!result.stale, warnings, unavailableMetrics: result.unavailableMetrics || [], data: result.data });
+  } catch (err) {
+    return res.status(500).json({ status: "error", source: "mock", generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: err.message });
+  }
+});
+// ==========================================
+// INTEGRATION ENCRYPTION & OAUTH HELPERS (CJS mirror)
+// ==========================================
+
+function encryptToken(text) {
+  const keyHex = process.env.INTEGRATION_ENCRYPTION_KEY || '';
+  if (!keyHex) throw new Error('INTEGRATION_ENCRYPTION_KEY is not configured');
+  const key = Buffer.from(keyHex, 'hex');
+  const iv = (0, import_crypto.randomBytes)(12);
+  const cipher = (0, import_crypto.createCipheriv)('aes-256-gcm', key, iv);
+  const encrypted = Buffer.concat([cipher.update(text, 'utf8'), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted.toString('hex')}`;
+}
+
+function decryptToken(encryptedStr) {
+  const keyHex = process.env.INTEGRATION_ENCRYPTION_KEY || '';
+  if (!keyHex) throw new Error('INTEGRATION_ENCRYPTION_KEY is not configured');
+  const key = Buffer.from(keyHex, 'hex');
+  const [ivHex, authTagHex, ciphertextHex] = encryptedStr.split(':');
+  const iv = Buffer.from(ivHex, 'hex');
+  const authTag = Buffer.from(authTagHex, 'hex');
+  const ciphertext = Buffer.from(ciphertextHex, 'hex');
+  const decipher = (0, import_crypto.createDecipheriv)('aes-256-gcm', key, iv);
+  decipher.setAuthTag(authTag);
+  return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
+}
+
+function generatePKCE() {
+  const codeVerifier = (0, import_crypto.randomBytes)(64).toString('base64url');
+  const codeChallenge = (0, import_crypto.createHash)('sha256').update(codeVerifier).digest('base64url');
+  return { codeVerifier, codeChallenge };
+}
+
+function mintOAuthState(workspaceId, codeVerifier) {
+  const secret = process.env.GOOGLE_OAUTH_CLIENT_SECRET;
+  const body = Buffer.from(JSON.stringify({
+    workspaceId, codeVerifier,
+    exp: Math.floor(Date.now() / 1000) + 600,
+    nonce: (0, import_crypto.randomBytes)(8).toString('hex')
+  })).toString('base64url');
+  const sig = (0, import_crypto.createHmac)('sha256', secret).update(body).digest('base64url');
+  return `${body}.${sig}`;
+}
+
+function verifyOAuthState(state) {
+  try {
+    const dotIdx = state.lastIndexOf('.');
+    if (dotIdx === -1) return null;
+    const body = state.slice(0, dotIdx);
+    const sig = state.slice(dotIdx + 1);
+    const secret = process.env.GOOGLE_OAUTH_CLIENT_SECRET;
+    if (!secret) return null;
+    const expected = (0, import_crypto.createHmac)('sha256', secret).update(body).digest('base64url');
+    const a = Buffer.from(sig, 'base64url');
+    const b = Buffer.from(expected, 'base64url');
+    if (a.length !== b.length || !(0, import_crypto.timingSafeEqual)(a, b)) return null;
+    const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+    if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) return null;
+    return { workspaceId: payload.workspaceId, codeVerifier: payload.codeVerifier };
+  } catch { return null; }
+}
+
+async function getValidGoogleToken(workspaceId) {
+  const { data: row } = await supabaseAdmin
+    .from('workspace_integrations')
+    .select('encrypted_access_token, encrypted_refresh_token, token_expiry')
+    .eq('workspace_id', workspaceId).eq('provider', 'google_analytics').single();
+  if (!row) return null;
+  const now = Date.now();
+  const expiry = row.token_expiry ? new Date(row.token_expiry).getTime() : 0;
+  if (expiry - now > 5 * 60 * 1000 && row.encrypted_access_token) {
+    try { return decryptToken(row.encrypted_access_token); } catch { return null; }
+  }
+  if (!row.encrypted_refresh_token) return null;
+  try {
+    const refreshToken = decryptToken(row.encrypted_refresh_token);
+    const resp = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        refresh_token: refreshToken,
+        client_id: process.env.GOOGLE_OAUTH_CLIENT_ID,
+        client_secret: process.env.GOOGLE_OAUTH_CLIENT_SECRET,
+        grant_type: 'refresh_token'
+      }).toString()
+    });
+    if (!resp.ok) return null;
+    const tokenData = await resp.json();
+    const newExpiry = new Date(Date.now() + (tokenData.expires_in || 3600) * 1000).toISOString();
+    await supabaseAdmin.from('workspace_integrations').update({
+      encrypted_access_token: encryptToken(tokenData.access_token),
+      token_expiry: newExpiry, last_synced_at: new Date().toISOString()
+    }).eq('workspace_id', workspaceId).eq('provider', 'google_analytics');
+    return tokenData.access_token;
+  } catch { return null; }
+}
+
+async function fetchGA4Report(accessToken, propertyId, startDate, endDate) {
+  const base = `https://analyticsdata.googleapis.com/v1beta/properties/${propertyId}:runReport`;
+  const headers = { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' };
+  const [channelRes, pagesRes] = await Promise.all([
+    fetch(base, { method: 'POST', headers, body: JSON.stringify({
+      dateRanges: [{ startDate, endDate }],
+      dimensions: [{ name: 'sessionDefaultChannelGroup' }],
+      metrics: [{ name: 'sessions' }, { name: 'totalUsers' }, { name: 'newUsers' }, { name: 'conversions' }],
+      limit: 20
+    }) }),
+    fetch(base, { method: 'POST', headers, body: JSON.stringify({
+      dateRanges: [{ startDate, endDate }],
+      dimensions: [{ name: 'landingPagePlusQueryString' }],
+      metrics: [{ name: 'sessions' }, { name: 'bounceRate' }],
+      orderBys: [{ metric: { metricName: 'sessions' }, desc: true }],
+      limit: 10
+    }) })
+  ]);
+  const channelData = channelRes.ok ? await channelRes.json() : null;
+  const pagesData = pagesRes.ok ? await pagesRes.json() : null;
+  let sessions = 0, users = 0, newUsers = 0, conversions = 0;
+  const channelBreakdown = [];
+  if (channelData?.rows) {
+    for (const row of channelData.rows) {
+      const s = parseInt(row.metricValues?.[0]?.value || '0');
+      const u = parseInt(row.metricValues?.[1]?.value || '0');
+      const n = parseInt(row.metricValues?.[2]?.value || '0');
+      const c = parseInt(row.metricValues?.[3]?.value || '0');
+      sessions += s; users += u; newUsers += n; conversions += c;
+      channelBreakdown.push({ channel: row.dimensionValues?.[0]?.value || 'Unknown', sessions: s, users: u, conversions: c });
+    }
+  }
+  const topLandingPages = [];
+  if (pagesData?.rows) {
+    for (const row of pagesData.rows) {
+      topLandingPages.push({
+        page: row.dimensionValues?.[0]?.value || '/',
+        sessions: parseInt(row.metricValues?.[0]?.value || '0'),
+        bounceRate: parseFloat(row.metricValues?.[1]?.value || '0')
+      });
+    }
+  }
+  return { sessions, users, newUsers, conversions, channelBreakdown, topLandingPages };
+}
+
+async function fetchGA4Properties(accessToken) {
+  const res = await fetch('https://analyticsadmin.googleapis.com/v1beta/accountSummaries', {
+    headers: { 'Authorization': `Bearer ${accessToken}` }
+  });
+  if (!res.ok) return [];
+  const data = await res.json();
+  const props = [];
+  for (const account of (data.accountSummaries || [])) {
+    for (const prop of (account.propertySummaries || [])) {
+      props.push({
+        propertyId: prop.property?.replace('properties/', '') || '',
+        displayName: prop.displayName || prop.property || 'Unknown Property',
+        accountName: account.displayName || 'Unknown Account'
+      });
+    }
+  }
+  return props;
+}
+
+function getMockGA4Report() {
+  return {
+    sessions: 3842, users: 2915, newUsers: 1847, conversions: 124,
+    channelBreakdown: [
+      { channel: 'Organic Search', sessions: 1520, users: 1180, conversions: 62 },
+      { channel: 'Direct', sessions: 890, users: 740, conversions: 28 },
+      { channel: 'Paid Search', sessions: 612, users: 510, conversions: 19 },
+      { channel: 'Social', sessions: 440, users: 275, conversions: 8 },
+      { channel: 'Email', sessions: 280, users: 155, conversions: 5 },
+      { channel: 'Referral', sessions: 100, users: 55, conversions: 2 }
+    ],
+    topLandingPages: [
+      { page: '/', sessions: 1240, bounceRate: 0.42 },
+      { page: '/pool-services', sessions: 688, bounceRate: 0.35 },
+      { page: '/contact', sessions: 512, bounceRate: 0.28 },
+      { page: '/pool-installation', sessions: 420, bounceRate: 0.38 },
+      { page: '/pool-repair', sessions: 310, bounceRate: 0.45 },
+      { page: '/blog/pool-maintenance-tips', sessions: 284, bounceRate: 0.52 },
+      { page: '/free-estimate', sessions: 245, bounceRate: 0.22 },
+      { page: '/about', sessions: 143, bounceRate: 0.55 }
+    ],
+    source: 'mock',
+    warnings: ['Google Analytics is not connected. Showing sample data.']
+  };
+}
+
+// ---- INTEGRATION ROUTES (CJS mirror) ----
+
+app.get('/api/integrations/google/auth', requireAuth(), async (req, res) => {
+  const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID;
+  const redirectUri = process.env.GOOGLE_OAUTH_REDIRECT_URI;
+  const clientSecret = process.env.GOOGLE_OAUTH_CLIENT_SECRET;
+  if (!clientId || !redirectUri || !clientSecret) {
+    return res.status(500).json({ status: 'error', error: 'Google OAuth is not configured on this server.' });
+  }
+  const { codeVerifier, codeChallenge } = generatePKCE();
+  const state = mintOAuthState(req.workspace.id, codeVerifier);
+  const params = new URLSearchParams({
+    client_id: clientId, redirect_uri: redirectUri, response_type: 'code',
+    scope: 'https://www.googleapis.com/auth/analytics.readonly',
+    access_type: 'offline', prompt: 'consent',
+    code_challenge: codeChallenge, code_challenge_method: 'S256', state
+  });
+  return res.json({ status: 'success', authUrl: `https://accounts.google.com/o/oauth2/v2/auth?${params}` });
+});
+
+app.get('/api/integrations/google/callback', async (req, res) => {
+  const code = typeof req.query.code === 'string' ? req.query.code : '';
+  const state = typeof req.query.state === 'string' ? req.query.state : '';
+  const oauthError = typeof req.query.error === 'string' ? req.query.error : '';
+  const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_OAUTH_CLIENT_SECRET;
+  const redirectUri = process.env.GOOGLE_OAUTH_REDIRECT_URI;
+  const closeWithMsg = (type, extra = '') =>
+    res.send(`<!DOCTYPE html><html><body><script>if(window.opener){window.opener.postMessage({type:${JSON.stringify(type)}${extra}},'*');}window.close();</script><p>${type === 'ga4_connected' ? 'Connected! You can close this window.' : 'Authorization failed — you can close this window.'}</p></body></html>`);
+  if (oauthError) return closeWithMsg('ga4_error', `,error:${JSON.stringify(oauthError)}`);
+  if (!code || !state) return closeWithMsg('ga4_error', `,error:'Missing code or state'`);
+  const statePayload = verifyOAuthState(state);
+  if (!statePayload) return closeWithMsg('ga4_error', `,error:'Invalid or expired state'`);
+  const { workspaceId, codeVerifier } = statePayload;
+  try {
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ code, redirect_uri: redirectUri, client_id: clientId,
+        client_secret: clientSecret, code_verifier: codeVerifier, grant_type: 'authorization_code' }).toString()
+    });
+    if (!tokenRes.ok) { console.error('[GA4 OAuth] Token exchange failed:', await tokenRes.text()); return closeWithMsg('ga4_error', `,error:'Token exchange failed'`); }
+    const tokens = await tokenRes.json();
+    const now = new Date().toISOString();
+    const expiry = new Date(Date.now() + (tokens.expires_in || 3600) * 1000).toISOString();
+    await supabaseAdmin.from('workspace_integrations').upsert({
+      id: `int_ga4_${Date.now()}`, workspace_id: workspaceId, provider: 'google_analytics', status: 'CONNECTED',
+      encrypted_access_token: encryptToken(tokens.access_token),
+      encrypted_refresh_token: tokens.refresh_token ? encryptToken(tokens.refresh_token) : null,
+      token_expiry: expiry, connected_at: now, last_synced_at: now, metadata: {}
+    }, { onConflict: 'workspace_id,provider' });
+    try { await logAction(workspaceId, 'system', 'system', 'CONNECT_GA4', 'Google Analytics connected via OAuth.'); } catch {}
+    return closeWithMsg('ga4_connected');
+  } catch (err) { console.error('[GA4 OAuth] Callback error:', err); return closeWithMsg('ga4_error', `,error:'Server error during token exchange'`); }
+});
+
+app.get('/api/integrations/status', requireAuth(), async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  const { data: rows } = await supabaseAdmin
+    .from('workspace_integrations').select('provider, status, property_id, property_name, connected_at')
+    .eq('workspace_id', req.workspace.id);
+  const integrations = (rows || []).map((r) => ({
+    provider: r.provider, status: r.status,
+    propertyId: r.property_id || null, propertyName: r.property_name || null, connectedAt: r.connected_at || null
+  }));
+  return res.json({ status: 'success', integrations });
+});
+
+app.delete('/api/integrations/google', requireAuth(), async (req, res) => {
+  const { data: row } = await supabaseAdmin.from('workspace_integrations')
+    .select('encrypted_access_token').eq('workspace_id', req.workspace.id).eq('provider', 'google_analytics').single();
+  if (row?.encrypted_access_token) {
+    try {
+      const accessToken = decryptToken(row.encrypted_access_token);
+      await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(accessToken)}`, { method: 'POST' });
+    } catch {}
+  }
+  await supabaseAdmin.from('workspace_integrations').delete().eq('workspace_id', req.workspace.id).eq('provider', 'google_analytics');
+  try { await logAction(req.workspace.id, req.user.id, req.user.email, 'DISCONNECT_GA4', 'Google Analytics disconnected.'); } catch {}
+  return res.json({ status: 'success', message: 'Google Analytics disconnected.' });
+});
+
+app.get('/api/integrations/google/properties', requireAuth(), async (req, res) => {
+  const accessToken = await getValidGoogleToken(req.workspace.id);
+  if (!accessToken) return res.status(400).json({ status: 'error', error: 'Google Analytics is not connected or token refresh failed.' });
+  try {
+    const properties = await fetchGA4Properties(accessToken);
+    return res.json({ status: 'success', properties });
+  } catch (err) { return res.status(500).json({ status: 'error', error: err.message }); }
+});
+
+app.post('/api/integrations/google/property', requireAuth(), async (req, res) => {
+  const { propertyId, propertyName } = req.body;
+  if (!propertyId) return res.status(400).json({ status: 'error', error: 'propertyId is required.' });
+  await supabaseAdmin.from('workspace_integrations')
+    .update({ property_id: propertyId, property_name: propertyName || propertyId })
+    .eq('workspace_id', req.workspace.id).eq('provider', 'google_analytics');
+  try { await logAction(req.workspace.id, req.user.id, req.user.email, 'SET_GA4_PROPERTY', `GA4 property set: ${propertyId}`); } catch {}
+  return res.json({ status: 'success', message: 'GA4 property saved.' });
+});
+
+// ---- DEBUG: raw GHL estimates/invoices probe (SUPER_ADMIN / WORKSPACE_OWNER only) ----
+app.get('/api/debug/ghl-payments', requireAuth(["SUPER_ADMIN", "WORKSPACE_OWNER"]), async (req, res) => {
+  const { resolveGHLAuthentication } = await import('../src/ghlService.js');
+  let auth;
+  try { auth = resolveGHLAuthentication(req.workspace.id); }
+  catch (e) { return res.json({ status: 'error', step: 'auth', error: e.message }); }
+
+  const { authHeader, locationId } = auth;
+  const base = process.env.GHL_BASE_URL || 'https://services.leadconnectorhq.com';
+  const ver  = process.env.GHL_API_VERSION || '2021-07-28';
+  const hdrs = { 'Authorization': authHeader, 'Version': ver, 'Content-Type': 'application/json' };
+
+  async function probe(label, url) {
+    try {
+      const r = await fetch(url, { headers: hdrs });
+      const body = await r.text();
+      return { label, url, status: r.status, bodyPreview: body.slice(0, 400) };
+    } catch (e) {
+      return { label, url, status: 'NETWORK_ERROR', bodyPreview: e.message };
+    }
+  }
+
+  const sd = typeof req.query.startDate === 'string' ? req.query.startDate : new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  const ed = typeof req.query.endDate   === 'string' ? req.query.endDate   : new Date().toISOString().slice(0, 10);
+
+  const results = await Promise.all([
+    probe('estimates_current',  `${base}/estimates/?limit=5&page=1&locationId=${locationId}&startDate=${sd}&endDate=${ed}`),
+    probe('invoices_current',   `${base}/invoices/?limit=5&page=1&locationId=${locationId}&startDate=${sd}&endDate=${ed}`),
+    probe('invoices_altId',     `${base}/invoices/?limit=5&altId=${locationId}&altType=location`),
+    probe('invoices_offset',    `${base}/invoices/?limit=5&offset=0&altId=${locationId}&altType=location`),
+  ]);
+
+  return res.json({ status: 'ok', locationId, results });
+});
+
+app.get('/api/reporting/ga4', requireAuth(), async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  const startDate = typeof req.query.startDate === 'string' ? req.query.startDate : void 0;
+  const endDate = typeof req.query.endDate === 'string' ? req.query.endDate : void 0;
+  const { data: integration } = await supabaseAdmin.from('workspace_integrations')
+    .select('status, property_id').eq('workspace_id', req.workspace.id).eq('provider', 'google_analytics').single();
+  if (!integration || integration.status !== 'CONNECTED') return res.json({ status: 'success', connected: false, data: null });
+  if (!integration.property_id) return res.json({ status: 'success', connected: true, propertySelected: false, data: null });
+  const sd = startDate || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  const ed = endDate || new Date().toISOString().slice(0, 10);
+  const accessToken = await getValidGoogleToken(req.workspace.id);
+  if (!accessToken) {
+    const mock = getMockGA4Report();
+    return res.json({ status: 'success', connected: true, propertySelected: true, data: { ...mock, source: 'mock', warnings: ['Token refresh failed — showing sample data. Reconnect Google Analytics.'] } });
+  }
+  try {
+    const liveData = await fetchGA4Report(accessToken, integration.property_id, sd, ed);
+    await supabaseAdmin.from('workspace_integrations').update({ last_synced_at: new Date().toISOString() })
+      .eq('workspace_id', req.workspace.id).eq('provider', 'google_analytics');
+    return res.json({ status: 'success', connected: true, propertySelected: true, data: { ...liveData, source: 'live', warnings: [] } });
+  } catch (err) {
+    const mock = getMockGA4Report();
+    return res.json({ status: 'success', connected: true, propertySelected: true, data: { ...mock, source: 'mock', warnings: [`GA4 API error: ${err.message} — showing sample data.`] } });
+  }
+});
+
 var index_default = app;
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {

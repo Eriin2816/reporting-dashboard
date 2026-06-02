@@ -16,8 +16,14 @@ import {
   CalendarDays
 } from 'lucide-react';
 
+const TIMEZONE_KEY = 'reporting_timezone';
+
+export function getReportingTimezone(): string {
+  try { return localStorage.getItem(TIMEZONE_KEY) || 'America/Los_Angeles'; } catch { return 'America/Los_Angeles'; }
+}
+
 export default function GlobalSettingsView() {
-  const [timezone, setTimezone] = useState('America/Chicago');
+  const [timezone, setTimezone] = useState(() => getReportingTimezone());
   const [slaTargetSeconds, setSlaTargetSeconds] = useState(120);
   const [decayDays, setDecayDays] = useState(45);
   const [slackAlerts, setSlackAlerts] = useState(true);
@@ -26,6 +32,7 @@ export default function GlobalSettingsView() {
 
   const handleApplySettings = (e: React.FormEvent) => {
     e.preventDefault();
+    try { localStorage.setItem(TIMEZONE_KEY, timezone); } catch { /* storage unavailable */ }
     setShowSuccess(true);
     setTimeout(() => setShowSuccess(false), 3000);
   };

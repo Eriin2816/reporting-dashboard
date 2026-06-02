@@ -288,6 +288,52 @@ export interface VAPerformanceReport {
   trends: TrendChartPoint[];
 }
 
+// Page 2b: Appointment Dashboard Report Payload
+export interface AppointmentDashboardReport {
+  summary: {
+    totalBooked: number;
+    totalShowed: number;
+    totalNoShow: number;
+    totalCancelled: number;
+    totalConfirmed: number;
+    showRate: number;
+    noShowRate: number;
+    cancellationRate: number;
+    upcomingCount: number;
+  };
+  statusDistribution: { status: string; count: number }[];
+  calendarBreakdown: {
+    calendarId: string;
+    calendarName: string;
+    total: number;
+    showed: number;
+    noshow: number;
+    cancelled: number;
+    confirmed: number;
+    showRate: number;
+  }[];
+  repBreakdown: {
+    userId: string;
+    userName: string;
+    booked: number;
+    showed: number;
+    noshow: number;
+    cancelled: number;
+    showRate: number;
+  }[];
+  upcomingAppointments: {
+    id: string;
+    title: string;
+    startTime: string;
+    status: string;
+    userId: string;
+    userName?: string;
+    calendarId: string;
+    calendarName?: string;
+  }[];
+  trends: TrendChartPoint[];
+}
+
 // Page 3: Marketing Performance Report Payload
 export interface MarketingPerformanceReport {
   summary: {
@@ -317,6 +363,61 @@ export interface MarketingPerformanceReport {
     conversionRate: number;
   }[];
   trends: TrendChartPoint[];
+}
+
+// Page 4: Estimates & Invoices Dashboard Report
+export interface EstimatesInvoicesReport {
+  estimates: {
+    totalCount: number;
+    totalValue: number;
+    byStatus: Record<string, { count: number; value: number }>;
+    funnel: {
+      sent: number;
+      sentValue: number;
+      viewed: number;
+      viewRate: number;
+      accepted: number;
+      acceptanceRate: number;
+      rejected: number;
+      rejectionRate: number;
+      converted: number;
+      conversionRate: number;
+      expired: number;
+    };
+  };
+  invoices: {
+    totalCount: number;
+    totalValue: number;
+    totalPaid: number;
+    totalOutstanding: number;
+    collectionRate: number;
+    avgInvoiceValue: number;
+    byStatus: Record<string, { count: number; value: number; amountPaid: number; amountDue: number }>;
+    aging: {
+      current:    { count: number; value: number };
+      days1to30:  { count: number; value: number };
+      days31to60: { count: number; value: number };
+      days61plus: { count: number; value: number };
+    };
+    unpaidList: {
+      id: string;
+      invoiceNumber: string;
+      name: string;
+      contactName: string;
+      contactEmail: string;
+      amountDue: number;
+      total: number;
+      dueDate: string;
+      issueDate: string;
+      daysOverdue: number;
+      status: string;
+    }[];
+  };
+  crossMetrics: {
+    estimateToInvoiceRate: number;
+  };
+  warnings: string[];
+  unavailableMetrics: string[];
 }
 
 // ==========================================
@@ -382,6 +483,42 @@ export interface SubscriptionPlaceholder {
   status: 'ACTIVE' | 'PAST_DUE' | 'CANCELED' | 'TRIALING';
   amount: number;
   nextBillingDate: string;
+}
+
+// ==========================================
+// EXTERNAL ANALYTICS INTEGRATION TYPES
+// ==========================================
+
+export interface IntegrationStatus {
+  provider: string;
+  status: 'CONNECTED' | 'ERROR' | 'REVOKED' | 'PENDING' | 'NOT_CONNECTED';
+  propertyId: string | null;
+  propertyName: string | null;
+  connectedAt: string | null;
+}
+
+export interface GA4ChannelRow {
+  channel: string;
+  sessions: number;
+  users: number;
+  conversions: number;
+}
+
+export interface GA4LandingPageRow {
+  page: string;
+  sessions: number;
+  bounceRate: number;
+}
+
+export interface GA4Report {
+  sessions: number;
+  users: number;
+  newUsers: number;
+  conversions: number;
+  channelBreakdown: GA4ChannelRow[];
+  topLandingPages: GA4LandingPageRow[];
+  source: 'live' | 'mock';
+  warnings: string[];
 }
 
 export interface AuditLog {

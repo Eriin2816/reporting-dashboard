@@ -4,6 +4,8 @@
  */
 
 import React, { useState } from 'react';
+import GoogleAnalyticsPanel from './GoogleAnalyticsPanel';
+import { IntegrationStatus, GA4Report } from '../types';
 import { 
   Share2, 
   TrendingUp, 
@@ -33,9 +35,14 @@ import { MarketingPerformanceReport } from '../types';
 
 interface MarketingDashboardViewProps {
   reportData: MarketingPerformanceReport;
+  ga4Integration?: IntegrationStatus | null;
+  ga4Report?: GA4Report | null;
+  isGa4Loading?: boolean;
+  token?: string;
+  onGA4Refresh?: () => void;
 }
 
-export default function MarketingDashboardView({ reportData }: MarketingDashboardViewProps) {
+export default function MarketingDashboardView({ reportData, ga4Integration, ga4Report, isGa4Loading, token, onGA4Refresh }: MarketingDashboardViewProps) {
   const { summary, leadsBySource, leadsByCampaign, bookingsBySource, wonRevenueBySource, campaignBreakdown, trends } = reportData;
 
   const [activeChannel, setActiveChannel] = useState<string>(Object.keys(leadsBySource)[0] || '');
@@ -282,6 +289,21 @@ export default function MarketingDashboardView({ reportData }: MarketingDashboar
             </tbody>
           </table>
         </div>
+      </div>
+
+      {/* Google Analytics 4 Integration Panel */}
+      <div className="pt-2">
+        <div className="flex items-center gap-3 mb-4">
+          <span className="text-[9px] text-slate-400 uppercase tracking-widest font-extrabold">External Analytics Integrations</span>
+          <div className="flex-1 h-[1px] bg-slate-200" />
+        </div>
+        <GoogleAnalyticsPanel
+          integration={ga4Integration ?? null}
+          ga4Report={ga4Report ?? null}
+          isLoading={!!isGa4Loading}
+          token={token}
+          onRefresh={onGA4Refresh ?? (() => {})}
+        />
       </div>
     </div>
   );
