@@ -14,7 +14,11 @@ import {
   ArrowRight,
   DollarSign,
   TrendingUp,
-  RefreshCw
+  RefreshCw,
+  AlertCircle,
+  CalendarClock,
+  BarChart2,
+  MessageSquare
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -24,18 +28,18 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  Cell
+  Cell,
+  PieChart,
+  Pie,
+  Legend
 } from 'recharts';
-import { EstimatesInvoicesReport } from '../types';
+import { EstimatesInvoicesReport, OutstandingReport, OutstandingRecord } from '../types';
 
 interface EstimatesInvoicesDashboardViewProps {
   reportData: EstimatesInvoicesReport;
-}
-
-function fmt$(n: number) {
-  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000)     return `$${(n / 1_000).toFixed(1)}k`;
-  return `$${n.toLocaleString()}`;
+  outstandingReport?: OutstandingReport | null;
+  isOutstandingLoading?: boolean;
+  outstandingError?: string | null;
 }
 
 function pct(n: number) { return `${n}%`; }
@@ -55,16 +59,87 @@ const AGING_COLORS = {
 };
 
 function StatusPill({ status }: { status: string }) {
-  const s = (status || '').toUpperCase();
-  const color = STATUS_COLORS[s] || '#94a3b8';
+  const key = (status || '').toUpperCase();
+  const color = STATUS_COLORS[key] || '#94a3b8';
   return (
     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black border" style={{ backgroundColor: `${color}18`, color, borderColor: `${color}40` }}>
-      {s}
+      {status || 'UNKNOWN'}
     </span>
   );
 }
 
-export default function EstimatesInvoicesDashboardView({ reportData }: EstimatesInvoicesDashboardViewProps) {
+function fmt$(n: number) {
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000)     return `$${(n / 1_000).toFixed(1)}k`;
+  return `$${n.toLocaleString()}`;
+}
+
+function fmtSentDate(iso: string): string {
+  if (!iso) return '—';
+  try {
+    return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  } catch { return iso.slice(0, 10); }
+}
+
+function DaysOutBadge({ days }: { days: number }) {
+  const cls = days >= 60
+    ? 'bg-rose-100 text-rose-700 border-rose-200'
+    : days >= 30
+    ? 'bg-orange-100 text-orange-700 border-orange-200'
+    : days >= 7
+    ? 'bg-amber-100 text-amber-700 border-amber-200'
+    : 'bg-slate-100 text-slate-600 border-slate-200';
+  return (
+    <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-black border ${cls}`}>
+      {days}d
+    </span>
+  );
+}
+
+function OutstandingTable({ records, emptyLabel }: { records: OutstandingRecord[]; emptyLabel: string }) {
+  if (records.length === 0) {
+    return (
+      <div className="py-8 text-center text-xs text-slate-400 font-semibold">
+        {emptyLabel}
+      </div>
+    );
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-left text-xs border-collapse">
+        <thead>
+          <tr className="bg-slate-50 border-b border-[#E2E8F0] text-[#64748B] font-extrabold uppercase tracking-wider text-[9px]">
+            <th className="py-2.5 px-4">#</th>
+            <th className="py-2.5 px-4">Contact / Lead</th>
+            <th className="py-2.5 px-4">Description</th>
+            <th className="py-2.5 px-4">Status</th>
+            <th className="py-2.5 px-4">Sent</th>
+            <th className="py-2.5 px-4 text-right">Amount</th>
+            <th className="py-2.5 px-4 text-center">Days Out</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100">
+          {records.map(r => (
+            <tr key={r.id} className="hover:bg-slate-50 transition">
+              <td className="py-2.5 px-4 font-mono text-slate-500 text-[10px] whitespace-nowrap">{r.number || '—'}</td>
+              <td className="py-2.5 px-4">
+                <span className="font-semibold text-slate-800 block">{r.contactName}</span>
+                {r.contactEmail && <span className="text-[9px] text-slate-400 font-mono">{r.contactEmail}</span>}
+              </td>
+              <td className="py-2.5 px-4 text-slate-600 max-w-[180px] truncate" title={r.name}>{r.name || '—'}</td>
+              <td className="py-2.5 px-4"><StatusPill status={r.status} /></td>
+              <td className="py-2.5 px-4 text-slate-500 whitespace-nowrap">{fmtSentDate(r.sentDate)}</td>
+              <td className="py-2.5 px-4 text-right font-mono font-bold text-slate-800">{fmt$(r.amount)}</td>
+              <td className="py-2.5 px-4 text-center"><DaysOutBadge days={r.daysOutstanding} /></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+export default function EstimatesInvoicesDashboardView({ reportData, outstandingReport, isOutstandingLoading, outstandingError }: EstimatesInvoicesDashboardViewProps) {
   const { estimates, invoices, crossMetrics } = reportData;
   const [activeSection, setActiveSection] = useState<'estimates' | 'invoices'>('invoices');
 
@@ -80,6 +155,65 @@ export default function EstimatesInvoicesDashboardView({ reportData }: Estimates
 
   return (
     <div className="space-y-6" id="estimates-invoices-view">
+
+      {/* ── OUTSTANDING SECTION (ALL-TIME) ── */}
+      <div className="bg-white border border-[#E2E8F0] shadow-sm rounded-xl overflow-hidden">
+        {/* Header */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-5 py-4 border-b border-slate-100 bg-[#F8FAFC]">
+          <div className="flex items-center gap-2.5">
+            <CalendarClock className="w-5 h-5 text-[#1D4ED8]" />
+            <div>
+              <h3 className="text-sm font-extrabold text-[#0F172A]">Outstanding — Open &amp; Awaiting Action</h3>
+              <p className="text-[10px] text-slate-500 font-semibold mt-0.5">Pending estimates and unpaid invoices since the beginning</p>
+            </div>
+          </div>
+          <span className="flex items-center gap-1 text-[9px] font-black uppercase tracking-widest bg-amber-50 text-amber-700 border border-amber-200 px-2.5 py-1 rounded-full whitespace-nowrap">
+            All-time · not affected by date filter
+          </span>
+        </div>
+
+        {isOutstandingLoading ? (
+          <div className="flex items-center gap-3 justify-center py-12">
+            <RefreshCw className="w-5 h-5 text-[#1D4ED8] animate-spin" />
+            <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Loading all-time outstanding…</span>
+          </div>
+        ) : outstandingError ? (
+          <div className="flex items-center gap-2.5 m-4 p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700 font-semibold">
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            {outstandingError}
+          </div>
+        ) : outstandingReport ? (
+          <div className="divide-y divide-slate-100">
+
+            {/* Pending Estimates */}
+            <div>
+              <div className="flex items-center gap-3 px-5 py-3 bg-blue-50/60">
+                <FileText className="w-4 h-4 text-blue-600" />
+                <span className="text-xs font-extrabold text-blue-900">Pending Estimates</span>
+                <span className="ml-auto flex items-center gap-3 text-xs font-bold text-blue-800">
+                  <span>{outstandingReport.pendingEstimates.count} record{outstandingReport.pendingEstimates.count !== 1 ? 's' : ''}</span>
+                  <span className="bg-blue-100 border border-blue-200 px-2 py-0.5 rounded-full font-black">{fmt$(outstandingReport.pendingEstimates.totalValue)}</span>
+                </span>
+              </div>
+              <OutstandingTable records={outstandingReport.pendingEstimates.records} emptyLabel="No pending estimates" />
+            </div>
+
+            {/* Unpaid Invoices */}
+            <div>
+              <div className="flex items-center gap-3 px-5 py-3 bg-rose-50/60">
+                <Receipt className="w-4 h-4 text-rose-600" />
+                <span className="text-xs font-extrabold text-rose-900">Unpaid Invoices</span>
+                <span className="ml-auto flex items-center gap-3 text-xs font-bold text-rose-800">
+                  <span>{outstandingReport.unpaidInvoices.count} record{outstandingReport.unpaidInvoices.count !== 1 ? 's' : ''}</span>
+                  <span className="bg-rose-100 border border-rose-200 px-2 py-0.5 rounded-full font-black">{fmt$(outstandingReport.unpaidInvoices.totalValue)}</span>
+                </span>
+              </div>
+              <OutstandingTable records={outstandingReport.unpaidInvoices.records} emptyLabel="No unpaid invoices" />
+            </div>
+
+          </div>
+        ) : null}
+      </div>
 
       {/* ── SECTION TABS ── */}
       <div className="flex items-center gap-1 bg-slate-100 rounded-xl p-1 w-fit">
@@ -186,6 +320,103 @@ export default function EstimatesInvoicesDashboardView({ reportData }: Estimates
             </div>
           </div>
 
+          {/* ── COMPARISON 1: Paid vs Unpaid ── */}
+          {(() => {
+            const paidCount   = invoices.byStatus['PAID']?.count ?? 0;
+            const paidValue   = invoices.byStatus['PAID']?.value ?? 0;
+            const unpaidCnt   = invoices.unpaidList.length;
+            const unpaidVal   = invoices.totalOutstanding;
+            const totalCnt    = paidCount + unpaidCnt;
+            const totalVal    = paidValue + unpaidVal;
+            const paidPctCnt  = totalCnt  > 0 ? Math.round((paidCount / totalCnt)  * 100) : 0;
+            const paidPctVal  = totalVal  > 0 ? Math.round((paidValue / totalVal)  * 100) : 0;
+            const donutData   = [
+              { name: 'Paid',   value: paidValue,  fill: '#10b981' },
+              { name: 'Unpaid', value: unpaidVal,   fill: '#f43f5e' },
+            ];
+            return (
+              <div className="bg-white border border-[#E2E8F0] shadow-sm rounded-xl overflow-hidden">
+                <div className="flex items-center gap-2.5 px-5 py-4 border-b border-slate-100 bg-[#F8FAFC]">
+                  <BarChart2 className="w-4 h-4 text-[#1D4ED8]" />
+                  <div>
+                    <span className="text-[10px] uppercase font-extrabold tracking-widest text-[#64748B]">Comparison</span>
+                    <h3 className="text-sm font-black text-[#0F172A] mt-0.5">Paid vs Unpaid — Collection Snapshot</h3>
+                  </div>
+                  <span className="ml-auto text-[9px] font-black uppercase tracking-widest bg-amber-50 text-amber-700 border border-amber-200 px-2.5 py-1 rounded-full">
+                    All-time
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-0 divide-y lg:divide-y-0 lg:divide-x divide-slate-100">
+                  {/* Donut chart */}
+                  <div className="flex items-center justify-center py-6">
+                    <ResponsiveContainer width={220} height={180}>
+                      <PieChart>
+                        <Pie data={donutData} cx="50%" cy="50%" innerRadius={52} outerRadius={76} paddingAngle={3} dataKey="value">
+                          {donutData.map((entry, i) => <Cell key={i} fill={entry.fill} />)}
+                        </Pie>
+                        <Tooltip formatter={(v: number) => fmt$(v)} contentStyle={{ fontSize: 11, fontWeight: 700, borderRadius: 8, border: '1px solid #e2e8f0' }} />
+                        <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 11, fontWeight: 700 }} />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                  {/* Stats */}
+                  <div className="p-5 space-y-4">
+                    {/* Collection rate hero */}
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] uppercase font-extrabold tracking-widest text-[#64748B]">Collection Rate</span>
+                      <span className={`text-xl font-black ${invoices.collectionRate >= 80 ? 'text-emerald-700' : invoices.collectionRate >= 50 ? 'text-amber-700' : 'text-rose-700'}`}>
+                        {invoices.collectionRate}%
+                      </span>
+                    </div>
+                    {/* Split bar — count */}
+                    <div>
+                      <div className="flex justify-between text-[10px] font-bold text-slate-500 mb-1">
+                        <span>By count</span>
+                        <span>{totalCnt} invoices</span>
+                      </div>
+                      <div className="flex h-3 rounded-full overflow-hidden bg-slate-100">
+                        <div className="bg-emerald-500 transition-all" style={{ width: `${paidPctCnt}%` }} title={`Paid: ${paidCount}`} />
+                        <div className="bg-rose-400 transition-all" style={{ width: `${100 - paidPctCnt}%` }} title={`Unpaid: ${unpaidCnt}`} />
+                      </div>
+                      <div className="flex justify-between text-[10px] font-semibold mt-1">
+                        <span className="text-emerald-700">{paidCount} paid ({paidPctCnt}%)</span>
+                        <span className="text-rose-600">{unpaidCnt} unpaid ({100 - paidPctCnt}%)</span>
+                      </div>
+                    </div>
+                    {/* Split bar — value */}
+                    <div>
+                      <div className="flex justify-between text-[10px] font-bold text-slate-500 mb-1">
+                        <span>By value</span>
+                        <span>{fmt$(totalVal)} total</span>
+                      </div>
+                      <div className="flex h-3 rounded-full overflow-hidden bg-slate-100">
+                        <div className="bg-emerald-500 transition-all" style={{ width: `${paidPctVal}%` }} title={`Paid: ${fmt$(paidValue)}`} />
+                        <div className="bg-rose-400 transition-all" style={{ width: `${100 - paidPctVal}%` }} title={`Unpaid: ${fmt$(unpaidVal)}`} />
+                      </div>
+                      <div className="flex justify-between text-[10px] font-semibold mt-1">
+                        <span className="text-emerald-700">{fmt$(paidValue)} collected</span>
+                        <span className="text-rose-600">{fmt$(unpaidVal)} outstanding</span>
+                      </div>
+                    </div>
+                    {/* Unpaid breakdown */}
+                    <div className="pt-2 border-t border-slate-100 grid grid-cols-3 gap-2 text-center">
+                      {(['SENT','PARTIAL','OVERDUE'] as const).map(s => {
+                        const d = invoices.byStatus[s];
+                        return (
+                          <div key={s} className="bg-slate-50 border border-slate-200 rounded-lg p-2">
+                            <span className="block text-[9px] uppercase font-extrabold tracking-widest text-slate-500">{s}</span>
+                            <span className="block text-base font-black text-slate-800">{d?.count ?? 0}</span>
+                            <span className="block text-[9px] font-semibold text-slate-500">{fmt$(d?.amountDue ?? 0)}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
           {/* Unpaid invoice list */}
           <div className="bg-white border border-[#E2E8F0] shadow-sm rounded-xl overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
@@ -273,6 +504,77 @@ export default function EstimatesInvoicesDashboardView({ reportData }: Estimates
               </div>
             ))}
           </div>
+
+          {/* ── COMPARISON 2: Estimates Sent vs Awaiting vs Resolved ── */}
+          {(() => {
+            const byS         = estimates.byStatus;
+            const sentCount   = estimates.funnel.sent;
+            const awaitingCnt = (byS['SENT']?.count ?? 0) + (byS['VIEWED']?.count ?? 0);
+            const acceptedCnt = estimates.funnel.accepted;
+            const declinedCnt = estimates.funnel.rejected;
+            const convCnt     = estimates.funnel.converted;
+            const expiredCnt  = estimates.funnel.expired;
+            const resolvedCnt = acceptedCnt + declinedCnt + convCnt + expiredCnt;
+            const accRate     = sentCount > 0 ? Math.round((acceptedCnt / sentCount) * 100) : 0;
+            const pct = (n: number) => sentCount > 0 ? Math.round((n / sentCount) * 100) : 0;
+
+            const stages = [
+              { label: 'Sent (total non-draft)', count: sentCount, color: '#3b82f6',   bg: 'bg-blue-500',    pct: 100 },
+              { label: 'Awaiting response',      count: awaitingCnt, color: '#8b5cf6', bg: 'bg-violet-500',  pct: pct(awaitingCnt), sub: 'SENT + VIEWED, not yet resolved' },
+              { label: 'Accepted',               count: acceptedCnt, color: '#10b981', bg: 'bg-emerald-500', pct: pct(acceptedCnt) },
+              { label: 'Declined',               count: declinedCnt, color: '#f43f5e', bg: 'bg-rose-500',    pct: pct(declinedCnt) },
+              { label: 'Converted → Invoice',    count: convCnt,     color: '#06b6d4', bg: 'bg-cyan-500',    pct: pct(convCnt) },
+              { label: 'Expired',                count: expiredCnt,  color: '#f59e0b', bg: 'bg-amber-400',   pct: pct(expiredCnt) },
+            ];
+
+            return (
+              <div className="bg-white border border-[#E2E8F0] shadow-sm rounded-xl overflow-hidden">
+                <div className="flex flex-wrap items-center gap-3 px-5 py-4 border-b border-slate-100 bg-[#F8FAFC]">
+                  <MessageSquare className="w-4 h-4 text-[#1D4ED8]" />
+                  <div>
+                    <span className="text-[10px] uppercase font-extrabold tracking-widest text-[#64748B]">Comparison</span>
+                    <h3 className="text-sm font-black text-[#0F172A] mt-0.5">Estimates — Sent vs In Talks vs Resolved</h3>
+                  </div>
+                  <div className="ml-auto flex items-center gap-2">
+                    <span className="text-[9px] font-black uppercase tracking-widest bg-amber-50 text-amber-700 border border-amber-200 px-2.5 py-1 rounded-full">
+                      All-time
+                    </span>
+                    <span className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full border ${accRate >= 30 ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : accRate >= 15 ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-rose-50 text-rose-700 border-rose-200'}`}>
+                      {accRate}% acceptance rate
+                    </span>
+                  </div>
+                </div>
+                <div className="p-5 space-y-3">
+                  {/* In Talks vs Resolved summary row */}
+                  <div className="grid grid-cols-2 gap-3 mb-4">
+                    <div className="bg-violet-50 border border-violet-200 rounded-xl p-4 text-center">
+                      <span className="block text-[10px] uppercase font-extrabold tracking-widest text-violet-600 mb-1">In Talks / Awaiting</span>
+                      <span className="block text-3xl font-black text-violet-800">{awaitingCnt}</span>
+                      <span className="block text-[10px] font-semibold text-violet-500 mt-0.5">{pct(awaitingCnt)}% of sent</span>
+                    </div>
+                    <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 text-center">
+                      <span className="block text-[10px] uppercase font-extrabold tracking-widest text-slate-600 mb-1">Resolved</span>
+                      <span className="block text-3xl font-black text-slate-800">{resolvedCnt}</span>
+                      <span className="block text-[10px] font-semibold text-slate-500 mt-0.5">{pct(resolvedCnt)}% of sent</span>
+                    </div>
+                  </div>
+                  {/* Waterfall bars */}
+                  {stages.map(s => (
+                    <div key={s.label}>
+                      <div className="flex items-center justify-between text-xs mb-1">
+                        <span className="font-bold text-slate-700">{s.label}</span>
+                        <span className="font-black text-slate-800">{s.count} <span className="text-slate-400 font-semibold">({s.pct}%)</span></span>
+                      </div>
+                      <div className="h-2.5 bg-slate-100 rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full ${s.bg} opacity-80 transition-all`} style={{ width: `${s.pct}%` }} />
+                      </div>
+                      {s.sub && <p className="text-[9px] text-slate-400 font-semibold mt-0.5">{s.sub}</p>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Funnel chart + status breakdown */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
