@@ -1429,30 +1429,46 @@ async function computeLiveMarketingReport(workspaceId, filters = {}) {
 function totalWon(opps) {
   return opps.filter((o) => o.status === "won").length;
 }
-// GHL estimates/invoices require altId + altType=location (NOT locationId like contacts/opportunities)
+// Status normalizers — GHL returns lowercase/underscore values; map to our uppercase display set
+function normalizeEstimateStatus(raw) {
+  const s = (raw || "").toLowerCase();
+  if (s === "declined") return "REJECTED";
+  if (s === "invoiced") return "CONVERTED";
+  return s.toUpperCase();
+}
+function normalizeInvoiceStatus(raw) {
+  const s = (raw || "").toLowerCase();
+  if (s === "partially_paid") return "PARTIAL";
+  return s.toUpperCase();
+}
+
+// Estimates: path is /invoices/estimate/list (singular + /list), offset-based pagination
 async function fetchAllEstimates(workspaceId, locationId, opts = {}) {
   const all = [];
-  for (let page = 1; page <= 50; page++) {
-    const p = new URLSearchParams({ altId: locationId, altType: "location", limit: "100", page: String(page) });
+  for (let offset = 0; offset < 10000; offset += 100) {
+    const p = new URLSearchParams({ altId: locationId, altType: "location", limit: "100", offset: String(offset) });
     if (opts.startDate) p.set("startDate", opts.startDate);
     if (opts.endDate) p.set("endDate", opts.endDate);
-    const res = await fetchFromGHLAPI(`estimates/?${p}`, workspaceId);
+    const res = await fetchFromGHLAPI(`invoices/estimate/list?${p}`, workspaceId);
     const batch = res.data?.estimates ?? [];
+    const total = Number(res.data?.total) || 0;
     all.push(...batch);
-    if (batch.length < 100 || !res.data?.meta?.nextPage) break;
+    if (batch.length < 100 || (total > 0 && offset + 100 >= total)) break;
   }
   return all;
 }
+// Invoices: offset-based pagination, response: { invoices: [...], total: N }
 async function fetchAllInvoicesGHL(workspaceId, locationId, opts = {}) {
   const all = [];
-  for (let page = 1; page <= 50; page++) {
-    const p = new URLSearchParams({ altId: locationId, altType: "location", limit: "100", page: String(page) });
+  for (let offset = 0; offset < 10000; offset += 100) {
+    const p = new URLSearchParams({ altId: locationId, altType: "location", limit: "100", offset: String(offset) });
     if (opts.startDate) p.set("startDate", opts.startDate);
     if (opts.endDate) p.set("endDate", opts.endDate);
     const res = await fetchFromGHLAPI(`invoices/?${p}`, workspaceId);
     const batch = res.data?.invoices ?? [];
+    const total = Number(res.data?.total) || 0;
     all.push(...batch);
-    if (batch.length < 100 || !res.data?.meta?.nextPage) break;
+    if (batch.length < 100 || (total > 0 && offset + 100 >= total)) break;
   }
   return all;
 }
@@ -1474,31 +1490,33 @@ async function computeLiveEstimatesInvoicesReport(workspaceId, filters = {}) {
       (async () => { try { rawInvoices = await fetchAllInvoicesGHL(workspaceId, locationId, filters); } catch (err) { warnings.push(`Invoices unavailable: ${err.message}`); unavailableMetrics.push("invoices"); } })()
     ]);
   }
+  const estNorm = (e) => normalizeEstimateStatus(e.estimateStatus || e.status || "");
   const estByStatus = {};
   for (const e of rawEstimates) {
-    const s = (e.status || "UNKNOWN").toUpperCase();
+    const s = estNorm(e) || "UNKNOWN";
     if (!estByStatus[s]) estByStatus[s] = { count: 0, value: 0 };
     estByStatus[s].count++;
     estByStatus[s].value += Number(e.total) || 0;
   }
-  const estSent = rawEstimates.filter(e => (e.status || "").toUpperCase() !== "DRAFT");
+  const estSent = rawEstimates.filter(e => estNorm(e) !== "DRAFT");
   const estSentCount = estSent.length;
   const estSentValue = estSent.reduce((s, e) => s + (Number(e.total) || 0), 0);
-  const estViewed = rawEstimates.filter(e => ["VIEWED", "ACCEPTED", "REJECTED", "CONVERTED"].includes((e.status || "").toUpperCase())).length;
-  const estAccepted = rawEstimates.filter(e => (e.status || "").toUpperCase() === "ACCEPTED").length;
-  const estRejected = rawEstimates.filter(e => (e.status || "").toUpperCase() === "REJECTED").length;
-  const estConverted = rawEstimates.filter(e => (e.status || "").toUpperCase() === "CONVERTED").length;
-  const estExpired = rawEstimates.filter(e => (e.status || "").toUpperCase() === "EXPIRED").length;
+  const estViewed   = rawEstimates.filter(e => ["VIEWED","ACCEPTED","REJECTED","CONVERTED"].includes(estNorm(e))).length;
+  const estAccepted = rawEstimates.filter(e => estNorm(e) === "ACCEPTED").length;
+  const estRejected = rawEstimates.filter(e => estNorm(e) === "REJECTED").length;
+  const estConverted = rawEstimates.filter(e => estNorm(e) === "CONVERTED").length;
+  const estExpired  = rawEstimates.filter(e => estNorm(e) === "EXPIRED").length;
+  const invNorm = (i) => normalizeInvoiceStatus(i.status || "");
   const invByStatus = {};
   for (const inv of rawInvoices) {
-    const s = (inv.status || "UNKNOWN").toUpperCase();
+    const s = invNorm(inv) || "UNKNOWN";
     if (!invByStatus[s]) invByStatus[s] = { count: 0, value: 0, amountPaid: 0, amountDue: 0 };
     invByStatus[s].count++;
     invByStatus[s].value += Number(inv.total) || 0;
     invByStatus[s].amountPaid += Number(inv.amountPaid) || 0;
     invByStatus[s].amountDue += Number(inv.amountDue) || 0;
   }
-  const invBillable = rawInvoices.filter(i => !["DRAFT", "CANCELLED"].includes((i.status || "").toUpperCase()));
+  const invBillable = rawInvoices.filter(i => !["DRAFT","CANCELLED"].includes(invNorm(i)));
   const invTotalValue = invBillable.reduce((s, i) => s + (Number(i.total) || 0), 0);
   const invTotalPaid = rawInvoices.reduce((s, i) => s + (Number(i.amountPaid) || 0), 0);
   const invTotalOutstanding = rawInvoices.reduce((s, i) => s + (Number(i.amountDue) || 0), 0);
@@ -1515,8 +1533,9 @@ async function computeLiveEstimatesInvoicesReport(workspaceId, filters = {}) {
     else if (daysOverdue <= 30){ aging.days1to30.count++;  aging.days1to30.value  += amtDue; }
     else if (daysOverdue <= 60){ aging.days31to60.count++; aging.days31to60.value += amtDue; }
     else                       { aging.days61plus.count++; aging.days61plus.value += amtDue; }
-    const contactName = inv.contact ? (`${inv.contact.firstName || ""} ${inv.contact.lastName || ""}`.trim() || inv.contact.email || "Unknown") : "Unknown";
-    unpaidList.push({ id: inv.id, invoiceNumber: inv.number || "", name: inv.name || inv.description || "", contactName, contactEmail: inv.contact?.email || "", amountDue: amtDue, total: Number(inv.total) || 0, dueDate: inv.dueDate || "", issueDate: inv.issueDate || "", daysOverdue, status: inv.status || "" });
+    const contactName = inv.contactDetails?.name || inv.contact?.name ||
+      (`${inv.contact?.firstName || ""} ${inv.contact?.lastName || ""}`.trim()) || "Unknown";
+    unpaidList.push({ id: inv._id || inv.id || "", invoiceNumber: inv.invoiceNumber || inv.number || "", name: inv.name || inv.description || "", contactName, contactEmail: inv.contactDetails?.email || inv.contact?.email || "", amountDue: amtDue, total: Number(inv.total) || 0, dueDate: inv.dueDate || "", issueDate: inv.issueDate || "", daysOverdue, status: invNorm(inv) });
   }
   unpaidList.sort((a, b) => b.daysOverdue - a.daysOverdue || b.amountDue - a.amountDue);
   return {
@@ -1908,14 +1927,15 @@ async function computeLiveOutstandingReport(workspaceId) {
   }
 
   function buildEstimateRecord(e) {
-    const sentDate = e.sentAt || e.updatedAt || e.createdAt || "";
+    const sentDate = e.sentAt || e.issueDate || e.updatedAt || e.createdAt || "";
     const sentMs = sentDate ? new Date(sentDate).getTime() : null;
-    const contactName = e.contact ? (`${e.contact.firstName || ""} ${e.contact.lastName || ""}`.trim() || e.contact.email || "Unknown") : "Unknown";
+    const contactName = e.contactDetails?.name || e.contact?.name ||
+      (`${e.contact?.firstName || ""} ${e.contact?.lastName || ""}`.trim()) || "Unknown";
     return {
-      id: e.id || "", number: e.number || e.estimateNumber || "",
-      name: e.name || e.description || e.title || "",
-      contactName, contactEmail: e.contact?.email || "",
-      status: e.status || "UNKNOWN",
+      id: e._id || e.id || "", number: e.estimateNumber || e.number || "",
+      name: e.name || e.title || e.subject || "",
+      contactName, contactEmail: e.contactDetails?.email || e.contact?.email || "",
+      status: normalizeEstimateStatus(e.estimateStatus || e.status || ""),
       sentDate, amount: Number(e.total) || 0,
       daysOutstanding: sentMs ? Math.max(0, Math.floor((now - sentMs) / 86400000)) : 0
     };
@@ -1923,19 +1943,20 @@ async function computeLiveOutstandingReport(workspaceId) {
   function buildInvoiceRecord(i) {
     const sentDate = i.sentAt || i.issueDate || i.updatedAt || i.createdAt || "";
     const sentMs = sentDate ? new Date(sentDate).getTime() : null;
-    const contactName = i.contact ? (`${i.contact.firstName || ""} ${i.contact.lastName || ""}`.trim() || i.contact.email || "Unknown") : "Unknown";
+    const contactName = i.contactDetails?.name || i.contact?.name ||
+      (`${i.contact?.firstName || ""} ${i.contact?.lastName || ""}`.trim()) || "Unknown";
     return {
-      id: i.id || "", number: i.number || i.invoiceNumber || "",
+      id: i._id || i.id || "", number: i.invoiceNumber || i.number || "",
       name: i.name || i.description || "",
-      contactName, contactEmail: i.contact?.email || "",
-      status: i.status || "UNKNOWN",
-      sentDate, amount: Number(i.amountDue) || Number(i.total) || 0,
+      contactName, contactEmail: i.contactDetails?.email || i.contact?.email || "",
+      status: normalizeInvoiceStatus(i.status || ""),
+      sentDate, amount: Number(i.amountDue) || 0,
       daysOutstanding: sentMs ? Math.max(0, Math.floor((now - sentMs) / 86400000)) : 0
     };
   }
 
-  const pendingEst = rawEstimates.filter(e => PENDING_ESTIMATE_STATUSES.has((e.status || "").toUpperCase())).map(buildEstimateRecord).sort((a, b) => b.daysOutstanding - a.daysOutstanding || b.amount - a.amount);
-  const unpaidInv = rawInvoices.filter(i => UNPAID_INVOICE_STATUSES.has((i.status || "").toUpperCase())).map(buildInvoiceRecord).sort((a, b) => b.daysOutstanding - a.daysOutstanding || b.amount - a.amount);
+  const pendingEst = rawEstimates.filter(e => PENDING_ESTIMATE_STATUSES.has(normalizeEstimateStatus(e.estimateStatus || e.status || ""))).map(buildEstimateRecord).sort((a, b) => b.daysOutstanding - a.daysOutstanding || b.amount - a.amount);
+  const unpaidInv = rawInvoices.filter(i => UNPAID_INVOICE_STATUSES.has(normalizeInvoiceStatus(i.status || ""))).map(buildInvoiceRecord).sort((a, b) => b.daysOutstanding - a.daysOutstanding || b.amount - a.amount);
 
   return {
     data: {

@@ -45,9 +45,15 @@ interface EstimatesInvoicesDashboardViewProps {
 function pct(n: number) { return `${n}%`; }
 
 const STATUS_COLORS: Record<string, string> = {
+  // Estimates (normalized)
   DRAFT: '#94a3b8', SENT: '#3b82f6', VIEWED: '#8b5cf6', ACCEPTED: '#10b981',
   REJECTED: '#f43f5e', CONVERTED: '#06b6d4', EXPIRED: '#f59e0b',
+  // GHL raw estimate aliases (in case normalization is bypassed)
+  DECLINED: '#f43f5e', INVOICED: '#06b6d4',
+  // Invoices (normalized)
   PAID: '#10b981', PARTIAL: '#f59e0b', OVERDUE: '#f43f5e', CANCELLED: '#94a3b8',
+  // GHL raw invoice alias
+  PARTIALLY_PAID: '#f59e0b',
   UNKNOWN: '#cbd5e1'
 };
 
