@@ -102,14 +102,38 @@ function DaysOutBadge({ days }: { days: number }) {
   );
 }
 
+type SortCol = 'sentDate' | 'amount' | 'daysOutstanding';
+
 function OutstandingTable({ records, emptyLabel }: { records: OutstandingRecord[]; emptyLabel: string }) {
-  if (records.length === 0) {
-    return (
-      <div className="py-8 text-center text-xs text-slate-400 font-semibold">
-        {emptyLabel}
-      </div>
-    );
+  const [sortCol, setSortCol] = useState<SortCol>('sentDate');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+
+  function handleSort(col: SortCol) {
+    if (col === sortCol) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortCol(col); setSortDir('desc'); }
   }
+
+  const sorted = [...records].sort((a, b) => {
+    let diff = 0;
+    if (sortCol === 'sentDate') {
+      diff = (a.sentDate ? new Date(a.sentDate).getTime() : 0) - (b.sentDate ? new Date(b.sentDate).getTime() : 0);
+    } else if (sortCol === 'amount') {
+      diff = a.amount - b.amount;
+    } else {
+      diff = a.daysOutstanding - b.daysOutstanding;
+    }
+    return sortDir === 'asc' ? diff : -diff;
+  });
+
+  function SortIndicator({ col }: { col: SortCol }) {
+    if (col !== sortCol) return <span className="text-slate-300 ml-0.5">↕</span>;
+    return <span className="text-[#1D4ED8] ml-0.5">{sortDir === 'asc' ? '↑' : '↓'}</span>;
+  }
+
+  if (records.length === 0) {
+    return <div className="py-8 text-center text-xs text-slate-400 font-semibold">{emptyLabel}</div>;
+  }
+
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-left text-xs border-collapse">
@@ -119,13 +143,19 @@ function OutstandingTable({ records, emptyLabel }: { records: OutstandingRecord[
             <th className="py-2.5 px-4">Contact / Lead</th>
             <th className="py-2.5 px-4">Description</th>
             <th className="py-2.5 px-4">Status</th>
-            <th className="py-2.5 px-4">Sent</th>
-            <th className="py-2.5 px-4 text-right">Amount</th>
-            <th className="py-2.5 px-4 text-center">Days Out</th>
+            <th className="py-2.5 px-4 cursor-pointer hover:text-[#1D4ED8] select-none whitespace-nowrap" onClick={() => handleSort('sentDate')}>
+              Sent <SortIndicator col="sentDate" />
+            </th>
+            <th className="py-2.5 px-4 text-right cursor-pointer hover:text-[#1D4ED8] select-none whitespace-nowrap" onClick={() => handleSort('amount')}>
+              Amount <SortIndicator col="amount" />
+            </th>
+            <th className="py-2.5 px-4 text-center cursor-pointer hover:text-[#1D4ED8] select-none whitespace-nowrap" onClick={() => handleSort('daysOutstanding')}>
+              Days Out <SortIndicator col="daysOutstanding" />
+            </th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100">
-          {records.map(r => (
+          {sorted.map(r => (
             <tr key={r.id} className="hover:bg-slate-50 transition">
               <td className="py-2.5 px-4 font-mono text-slate-500 text-[10px] whitespace-nowrap">{r.number || '—'}</td>
               <td className="py-2.5 px-4">
@@ -169,8 +199,8 @@ export default function EstimatesInvoicesDashboardView({ reportData, outstanding
           <div className="flex items-center gap-2.5">
             <CalendarClock className="w-5 h-5 text-[#1D4ED8]" />
             <div>
-              <h3 className="text-sm font-extrabold text-[#0F172A]">Outstanding — Open &amp; Awaiting Action</h3>
-              <p className="text-[10px] text-slate-500 font-semibold mt-0.5">Pending estimates and unpaid invoices since the beginning</p>
+              <h3 className="text-sm font-extrabold text-[#0F172A]">Unpaid Invoices — Open &amp; Awaiting Payment</h3>
+              <p className="text-[10px] text-slate-500 font-semibold mt-0.5">All invoices with an outstanding balance (all-time)</p>
             </div>
           </div>
           <span className="flex items-center gap-1 text-[9px] font-black uppercase tracking-widest bg-amber-50 text-amber-700 border border-amber-200 px-2.5 py-1 rounded-full whitespace-nowrap">
@@ -189,34 +219,16 @@ export default function EstimatesInvoicesDashboardView({ reportData, outstanding
             {outstandingError}
           </div>
         ) : outstandingReport ? (
-          <div className="divide-y divide-slate-100">
-
-            {/* Pending Estimates */}
-            <div>
-              <div className="flex items-center gap-3 px-5 py-3 bg-blue-50/60">
-                <FileText className="w-4 h-4 text-blue-600" />
-                <span className="text-xs font-extrabold text-blue-900">Pending Estimates</span>
-                <span className="ml-auto flex items-center gap-3 text-xs font-bold text-blue-800">
-                  <span>{outstandingReport.pendingEstimates.count} record{outstandingReport.pendingEstimates.count !== 1 ? 's' : ''}</span>
-                  <span className="bg-blue-100 border border-blue-200 px-2 py-0.5 rounded-full font-black">{fmt$(outstandingReport.pendingEstimates.totalValue)}</span>
-                </span>
-              </div>
-              <OutstandingTable records={outstandingReport.pendingEstimates.records} emptyLabel="No pending estimates" />
+          <div>
+            <div className="flex items-center gap-3 px-5 py-3 bg-rose-50/60 border-b border-slate-100">
+              <Receipt className="w-4 h-4 text-rose-600" />
+              <span className="text-xs font-extrabold text-rose-900">Unpaid Invoices</span>
+              <span className="ml-auto flex items-center gap-3 text-xs font-bold text-rose-800">
+                <span>{outstandingReport.unpaidInvoices.count} record{outstandingReport.unpaidInvoices.count !== 1 ? 's' : ''}</span>
+                <span className="bg-rose-100 border border-rose-200 px-2 py-0.5 rounded-full font-black">{fmt$(outstandingReport.unpaidInvoices.totalValue)}</span>
+              </span>
             </div>
-
-            {/* Unpaid Invoices */}
-            <div>
-              <div className="flex items-center gap-3 px-5 py-3 bg-rose-50/60">
-                <Receipt className="w-4 h-4 text-rose-600" />
-                <span className="text-xs font-extrabold text-rose-900">Unpaid Invoices</span>
-                <span className="ml-auto flex items-center gap-3 text-xs font-bold text-rose-800">
-                  <span>{outstandingReport.unpaidInvoices.count} record{outstandingReport.unpaidInvoices.count !== 1 ? 's' : ''}</span>
-                  <span className="bg-rose-100 border border-rose-200 px-2 py-0.5 rounded-full font-black">{fmt$(outstandingReport.unpaidInvoices.totalValue)}</span>
-                </span>
-              </div>
-              <OutstandingTable records={outstandingReport.unpaidInvoices.records} emptyLabel="No unpaid invoices" />
-            </div>
-
+            <OutstandingTable records={outstandingReport.unpaidInvoices.records} emptyLabel="No unpaid invoices" />
           </div>
         ) : null}
       </div>
@@ -423,66 +435,6 @@ export default function EstimatesInvoicesDashboardView({ reportData, outstanding
             );
           })()}
 
-          {/* Unpaid invoice list */}
-          <div className="bg-white border border-[#E2E8F0] shadow-sm rounded-xl overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
-              <div>
-                <span className="text-[10px] uppercase font-extrabold tracking-widest text-[#64748B]">Action Required</span>
-                <h3 className="text-sm font-black text-[#0F172A] mt-0.5">Unpaid Invoices ({unpaidCount})</h3>
-              </div>
-              <span className="text-xs font-black text-rose-700 bg-rose-50 border border-rose-200 px-2.5 py-1 rounded-full">
-                {fmt$(invoices.totalOutstanding)} outstanding
-              </span>
-            </div>
-            {invoices.unpaidList.length === 0 ? (
-              <div className="py-12 flex flex-col items-center gap-2 text-slate-400">
-                <CheckCircle2 className="w-8 h-8 text-emerald-400" />
-                <p className="text-xs font-semibold">All invoices paid — no outstanding balance</p>
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="bg-[#F8FAFC] border-b border-slate-100">
-                      <th className="text-left px-4 py-2.5 text-[10px] font-extrabold uppercase tracking-widest text-[#64748B]">Invoice</th>
-                      <th className="text-left px-4 py-2.5 text-[10px] font-extrabold uppercase tracking-widest text-[#64748B]">Contact</th>
-                      <th className="text-right px-4 py-2.5 text-[10px] font-extrabold uppercase tracking-widest text-amber-600">Amount Due</th>
-                      <th className="text-right px-4 py-2.5 text-[10px] font-extrabold uppercase tracking-widest text-[#64748B]">Total</th>
-                      <th className="text-center px-4 py-2.5 text-[10px] font-extrabold uppercase tracking-widest text-[#64748B]">Due Date</th>
-                      <th className="text-center px-4 py-2.5 text-[10px] font-extrabold uppercase tracking-widest text-rose-600">Overdue</th>
-                      <th className="text-center px-4 py-2.5 text-[10px] font-extrabold uppercase tracking-widest text-[#64748B]">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {invoices.unpaidList.map((inv, i) => {
-                      const overdueCls = inv.daysOverdue > 60 ? 'text-rose-700 font-black' : inv.daysOverdue > 30 ? 'text-orange-700 font-bold' : inv.daysOverdue > 0 ? 'text-amber-700 font-bold' : 'text-slate-400 font-semibold';
-                      return (
-                        <tr key={inv.id} className={`border-b border-slate-50 hover:bg-[#F8FAFC] ${i % 2 === 1 ? 'bg-slate-50/40' : ''}`}>
-                          <td className="px-4 py-3">
-                            <p className="font-bold text-[#0F172A] truncate max-w-[160px]">{inv.name || inv.invoiceNumber}</p>
-                            <p className="text-[10px] text-slate-400 font-mono mt-0.5">{inv.invoiceNumber}</p>
-                          </td>
-                          <td className="px-4 py-3">
-                            <p className="font-bold text-slate-700 truncate max-w-[140px]">{inv.contactName}</p>
-                            <p className="text-[10px] text-slate-400 truncate max-w-[140px]">{inv.contactEmail}</p>
-                          </td>
-                          <td className="px-4 py-3 text-right font-black text-amber-700">{fmt$(inv.amountDue)}</td>
-                          <td className="px-4 py-3 text-right font-semibold text-slate-500">{fmt$(inv.total)}</td>
-                          <td className="px-4 py-3 text-center text-slate-500 font-mono text-[11px]">
-                            {inv.dueDate ? new Date(inv.dueDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: '2-digit' }) : '—'}
-                          </td>
-                          <td className={`px-4 py-3 text-center ${overdueCls}`}>
-                            {inv.daysOverdue > 0 ? `${inv.daysOverdue}d` : 'Current'}
-                          </td>
-                          <td className="px-4 py-3 text-center"><StatusPill status={inv.status} /></td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
         </>
       )}
 
