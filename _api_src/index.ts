@@ -1285,6 +1285,34 @@ app.get('/api/reporting/estimates-invoices', requireAuth(), async (req: any, res
   } catch (err: any) { return res.status(500).json({ status: 'error', source: 'mock', generatedAt: new Date().toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: err.message }); }
 });
 
+app.get('/api/reporting/export/estimates', requireAuth(), async (req: any, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    await syncGhlToMockDb(req.workspace.id);
+    const result = await LiveReportingService.getEstimatesExport(req.workspace.id);
+    return res.status(200).json({ status: 'success', source: result.source, count: result.count, estimates: result.estimates });
+  } catch (err: any) { return res.status(500).json({ status: 'error', error: err.message }); }
+});
+
+app.get('/api/reporting/export/invoices', requireAuth(), async (req: any, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    await syncGhlToMockDb(req.workspace.id);
+    const result = await LiveReportingService.getInvoicesExport(req.workspace.id);
+    return res.status(200).json({ status: 'success', source: result.source, count: result.count, invoices: result.invoices });
+  } catch (err: any) { return res.status(500).json({ status: 'error', error: err.message }); }
+});
+
+app.get('/api/reporting/outstanding', requireAuth(), async (req: any, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  try {
+    await syncGhlToMockDb(req.workspace.id);
+    const result = await LiveReportingService.getOutstandingReport(req.workspace.id);
+    if (!result.data) return res.status(503).json({ status: 'error', source: result.source, generatedAt: new Date().toISOString(), stale: false, warnings: result.warnings || [], error: (result as any).error || 'Live data unavailable' });
+    return res.status(200).json({ status: 'success', source: result.source, generatedAt: new Date().toISOString(), stale: !!result.stale, warnings: result.warnings || [], data: result.data });
+  } catch (err: any) { return res.status(500).json({ status: 'error', source: 'mock', generatedAt: new Date().toISOString(), stale: false, warnings: [], error: err.message }); }
+});
+
 app.get('/api/reporting/appointment-performance', requireAuth(), async (req: any, res) => {
   try {
     await syncGhlToMockDb(req.workspace.id);

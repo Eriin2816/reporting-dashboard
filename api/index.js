@@ -1429,6 +1429,15 @@ async function computeLiveMarketingReport(workspaceId, filters = {}) {
 function totalWon(opps) {
   return opps.filter((o) => o.status === "won").length;
 }
+// Strip "undefined"/"null" tokens that GHL produces when a contact has no last name
+function sanitizeContactName(raw) {
+  if (!raw) return '';
+  return raw.split(/\s+/)
+    .filter(p => p && p.toLowerCase() !== 'undefined' && p.toLowerCase() !== 'null')
+    .join(' ')
+    .trim();
+}
+
 // Status normalizers — GHL returns lowercase/underscore values; map to our uppercase display set
 function normalizeEstimateStatus(raw) {
   const s = (raw || "").toLowerCase();
@@ -1533,8 +1542,8 @@ async function computeLiveEstimatesInvoicesReport(workspaceId, filters = {}) {
     else if (daysOverdue <= 30){ aging.days1to30.count++;  aging.days1to30.value  += amtDue; }
     else if (daysOverdue <= 60){ aging.days31to60.count++; aging.days31to60.value += amtDue; }
     else                       { aging.days61plus.count++; aging.days61plus.value += amtDue; }
-    const contactName = inv.contactDetails?.name || inv.contact?.name ||
-      (`${inv.contact?.firstName || ""} ${inv.contact?.lastName || ""}`.trim()) || "Unknown";
+    const contactName = sanitizeContactName(inv.contactDetails?.name || inv.contact?.name ||
+      `${inv.contact?.firstName || ""} ${inv.contact?.lastName || ""}`) || "Unknown";
     unpaidList.push({ id: inv._id || inv.id || "", invoiceNumber: inv.invoiceNumber || inv.number || "", name: inv.name || inv.description || "", contactName, contactEmail: inv.contactDetails?.email || inv.contact?.email || "", amountDue: amtDue, total: Number(inv.total) || 0, dueDate: inv.dueDate || "", issueDate: inv.issueDate || "", daysOverdue, status: invNorm(inv) });
   }
   unpaidList.sort((a, b) => b.daysOverdue - a.daysOverdue || b.amountDue - a.amountDue);
@@ -1929,8 +1938,8 @@ async function computeLiveOutstandingReport(workspaceId) {
   function buildEstimateRecord(e) {
     const sentDate = e.sentAt || e.issueDate || e.updatedAt || e.createdAt || "";
     const sentMs = sentDate ? new Date(sentDate).getTime() : null;
-    const contactName = e.contactDetails?.name || e.contact?.name ||
-      (`${e.contact?.firstName || ""} ${e.contact?.lastName || ""}`.trim()) || "Unknown";
+    const contactName = sanitizeContactName(e.contactDetails?.name || e.contact?.name ||
+      `${e.contact?.firstName || ""} ${e.contact?.lastName || ""}`) || "Unknown";
     return {
       id: e._id || e.id || "", number: e.estimateNumber || e.number || "",
       name: e.name || e.title || e.subject || "",
@@ -2003,6 +2012,49 @@ LiveReportingService.getOutstandingReport = async function(workspaceId) {
     console.error("[LiveReportingService] Outstanding failed:", err.message);
     return { source: "live", data: null, error: err.message, warnings: [`Outstanding data unavailable: ${err.message}`], stale: false };
   }
+};
+
+// CSV export methods — return raw records for client-side CSV download
+LiveReportingService.getEstimatesExport = async function(workspaceId) {
+  const settings = db.getReportingSettings(workspaceId);
+  if (settings.mode === "MOCK") return { source: "mock", estimates: [], count: 0 };
+  let locationId = "";
+  try { locationId = resolveGHLAuthentication(workspaceId).locationId; }
+  catch (err) { throw new Error(`AUTH_ERROR: ${err.message}`); }
+  const raw = await fetchAllEstimates(workspaceId, locationId, {});
+  const isoDate = (s) => { if (!s) return ""; try { return new Date(s).toISOString().slice(0, 10); } catch { return ""; } };
+  const estimates = raw.map(e => ({
+    estimateNumber: e.estimateNumber || "",
+    contactName:    sanitizeContactName(e.contactDetails?.name || e.contact?.name || `${e.contact?.firstName || ""} ${e.contact?.lastName || ""}`) || "",
+    contactEmail:   e.contactDetails?.email || e.contact?.email || "",
+    status:         normalizeEstimateStatus(e.estimateStatus || e.status || ""),
+    total:          Number(e.total) || 0,
+    sentDate:       isoDate(e.sentAt || e.issueDate || ""),
+    createdAt:      isoDate(e.createdAt || ""),
+  }));
+  return { source: "live", estimates, count: estimates.length };
+};
+
+LiveReportingService.getInvoicesExport = async function(workspaceId) {
+  const settings = db.getReportingSettings(workspaceId);
+  if (settings.mode === "MOCK") return { source: "mock", invoices: [], count: 0 };
+  let locationId = "";
+  try { locationId = resolveGHLAuthentication(workspaceId).locationId; }
+  catch (err) { throw new Error(`AUTH_ERROR: ${err.message}`); }
+  const raw = await fetchAllInvoicesGHL(workspaceId, locationId, {});
+  const isoDate = (s) => { if (!s) return ""; try { return new Date(s).toISOString().slice(0, 10); } catch { return ""; } };
+  const invoices = raw.map(i => ({
+    invoiceNumber: i.invoiceNumber || i.number || "",
+    contactName:   sanitizeContactName(i.contactDetails?.name || i.contact?.name || `${i.contact?.firstName || ""} ${i.contact?.lastName || ""}`) || "",
+    contactEmail:  i.contactDetails?.email || i.contact?.email || "",
+    status:        normalizeInvoiceStatus(i.status || ""),
+    total:         Number(i.total) || 0,
+    amountDue:     Number(i.amountDue) || 0,
+    dueDate:       isoDate(i.dueDate || ""),
+    sentDate:      isoDate(i.sentAt || i.issueDate || ""),
+    createdAt:     isoDate(i.createdAt || ""),
+  }));
+  return { source: "live", invoices, count: invoices.length };
 };
 
 // GHL SSO helpers — Node built-in crypto, no extra deps
@@ -2936,6 +2988,24 @@ app.get("/api/reporting/estimates-invoices", requireAuth(), async (req, res) => 
     return res.status(200).json({ status: "success", source: result.source, generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: !!result.stale, warnings, unavailableMetrics: result.unavailableMetrics || [], data: result.data });
   } catch (err) { return res.status(500).json({ status: "error", source: "mock", generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: err.message }); }
 });
+app.get("/api/reporting/export/estimates", requireAuth(), async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  try {
+    await syncGhlToMockDb(req.workspace.id);
+    const result = await LiveReportingService.getEstimatesExport(req.workspace.id);
+    return res.status(200).json({ status: "success", source: result.source, count: result.count, estimates: result.estimates });
+  } catch (err) { return res.status(500).json({ status: "error", error: err.message }); }
+});
+
+app.get("/api/reporting/export/invoices", requireAuth(), async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  try {
+    await syncGhlToMockDb(req.workspace.id);
+    const result = await LiveReportingService.getInvoicesExport(req.workspace.id);
+    return res.status(200).json({ status: "success", source: result.source, count: result.count, invoices: result.invoices });
+  } catch (err) { return res.status(500).json({ status: "error", error: err.message }); }
+});
+
 app.get("/api/reporting/outstanding", requireAuth(), async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
   try {

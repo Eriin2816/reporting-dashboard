@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   FileText,
   Receipt,
@@ -18,7 +18,8 @@ import {
   AlertCircle,
   CalendarClock,
   BarChart2,
-  MessageSquare
+  MessageSquare,
+  Download
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -40,6 +41,8 @@ interface EstimatesInvoicesDashboardViewProps {
   outstandingReport?: OutstandingReport | null;
   isOutstandingLoading?: boolean;
   outstandingError?: string | null;
+  token?: string;
+  locationName?: string;
 }
 
 function pct(n: number) { return `${n}%`; }
@@ -175,9 +178,61 @@ function OutstandingTable({ records, emptyLabel }: { records: OutstandingRecord[
   );
 }
 
-export default function EstimatesInvoicesDashboardView({ reportData, outstandingReport, isOutstandingLoading, outstandingError }: EstimatesInvoicesDashboardViewProps) {
+// ── CSV helpers ────────────────────────────────────────────────────────────
+function csvCell(v: string | number | null | undefined): string {
+  const s = v == null ? '' : String(v);
+  return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s;
+}
+function buildCSV(headers: string[], rows: (string | number | null | undefined)[][]): string {
+  return [headers.map(csvCell), ...rows.map(r => r.map(csvCell))].map(r => r.join(',')).join('\r\n');
+}
+function triggerDownload(csvContent: string, filename: string): void {
+  const blob = new Blob(['﻿' + csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url);
+}
+function todayStr(): string { return new Date().toISOString().slice(0, 10); }
+// ───────────────────────────────────────────────────────────────────────────
+
+export default function EstimatesInvoicesDashboardView({ reportData, outstandingReport, isOutstandingLoading, outstandingError, token, locationName }: EstimatesInvoicesDashboardViewProps) {
   const { estimates, invoices, crossMetrics } = reportData;
   const [activeSection, setActiveSection] = useState<'estimates' | 'invoices'>('invoices');
+  const [isExportingEst, setIsExportingEst] = useState(false);
+  const [isExportingInv, setIsExportingInv] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  const exportEstimates = useCallback(async () => {
+    setIsExportingEst(true); setExportError(null);
+    try {
+      const res = await fetch('/api/reporting/export/estimates', { headers: { 'x-auth-token': token || '' } });
+      const json = await res.json();
+      if (!res.ok || !json.estimates) throw new Error(json.error || 'Export failed');
+      const loc = (locationName || 'location').replace(/\s+/g, '');
+      const headers = ['Estimate Number', 'Contact Name', 'Contact Email', 'Status', 'Total', 'Sent Date', 'Created Date'];
+      const rows = json.estimates.map((e: any) => [e.estimateNumber, e.contactName, e.contactEmail, e.status, e.total, e.sentDate, e.createdAt]);
+      triggerDownload(buildCSV(headers, rows), `DashPro-Estimates-${loc}-${todayStr()}.csv`);
+      setExportError(`✓ ${json.count} estimates exported`);
+    } catch (err: any) { setExportError(`Export failed: ${err.message}`); }
+    finally { setIsExportingEst(false); }
+  }, [token, locationName]);
+
+  const exportInvoices = useCallback(async () => {
+    setIsExportingInv(true); setExportError(null);
+    try {
+      const res = await fetch('/api/reporting/export/invoices', { headers: { 'x-auth-token': token || '' } });
+      const json = await res.json();
+      if (!res.ok || !json.invoices) throw new Error(json.error || 'Export failed');
+      const loc = (locationName || 'location').replace(/\s+/g, '');
+      const headers = ['Invoice Number', 'Contact Name', 'Contact Email', 'Status', 'Total', 'Amount Due', 'Due Date', 'Sent Date', 'Created Date'];
+      const rows = json.invoices.map((i: any) => [i.invoiceNumber, i.contactName, i.contactEmail, i.status, i.total, i.amountDue, i.dueDate, i.sentDate, i.createdAt]);
+      triggerDownload(buildCSV(headers, rows), `DashPro-Invoices-${loc}-${todayStr()}.csv`);
+      setExportError(`✓ ${json.count} invoices exported`);
+    } catch (err: any) { setExportError(`Export failed: ${err.message}`); }
+    finally { setIsExportingInv(false); }
+  }, [token, locationName]);
 
   // Funnel chart data
   const funnelData = [
@@ -192,20 +247,51 @@ export default function EstimatesInvoicesDashboardView({ reportData, outstanding
   return (
     <div className="space-y-6" id="estimates-invoices-view">
 
-      {/* ── SECTION TABS ── */}
-      <div className="flex items-center gap-1 bg-slate-100 rounded-xl p-1 w-fit">
-        <button
-          onClick={() => setActiveSection('invoices')}
-          className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${activeSection === 'invoices' ? 'bg-white text-[#1D4ED8] shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-        >
-          <Receipt className="w-3.5 h-3.5" /> Invoices & AR
-        </button>
-        <button
-          onClick={() => setActiveSection('estimates')}
-          className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${activeSection === 'estimates' ? 'bg-white text-[#1D4ED8] shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-        >
-          <FileText className="w-3.5 h-3.5" /> Estimates & Funnel
-        </button>
+      {/* ── SECTION TABS + EXPORT ── */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-1 bg-slate-100 rounded-xl p-1">
+          <button
+            onClick={() => setActiveSection('invoices')}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${activeSection === 'invoices' ? 'bg-white text-[#1D4ED8] shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+          >
+            <Receipt className="w-3.5 h-3.5" /> Invoices & AR
+          </button>
+          <button
+            onClick={() => setActiveSection('estimates')}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${activeSection === 'estimates' ? 'bg-white text-[#1D4ED8] shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+          >
+            <FileText className="w-3.5 h-3.5" /> Estimates & Funnel
+          </button>
+        </div>
+
+        {/* Export buttons */}
+        {activeSection === 'invoices' && (
+          <button
+            onClick={exportInvoices}
+            disabled={isExportingInv}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold bg-white border border-slate-200 hover:border-[#1D4ED8] hover:text-[#1D4ED8] text-slate-600 shadow-sm transition cursor-pointer disabled:opacity-50"
+          >
+            <Download className={`w-3.5 h-3.5 ${isExportingInv ? 'animate-bounce' : ''}`} />
+            {isExportingInv ? 'Exporting…' : 'Export Invoices CSV'}
+          </button>
+        )}
+        {activeSection === 'estimates' && (
+          <button
+            onClick={exportEstimates}
+            disabled={isExportingEst}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold bg-white border border-slate-200 hover:border-[#1D4ED8] hover:text-[#1D4ED8] text-slate-600 shadow-sm transition cursor-pointer disabled:opacity-50"
+          >
+            <Download className={`w-3.5 h-3.5 ${isExportingEst ? 'animate-bounce' : ''}`} />
+            {isExportingEst ? 'Exporting…' : 'Export Estimates CSV'}
+          </button>
+        )}
+
+        {/* Export status feedback */}
+        {exportError && (
+          <span className={`text-[11px] font-semibold ${exportError.startsWith('✓') ? 'text-emerald-600' : 'text-rose-600'}`}>
+            {exportError}
+          </span>
+        )}
       </div>
 
       {/* ════════ INVOICES SECTION ════════ */}

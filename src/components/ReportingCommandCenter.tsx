@@ -1003,6 +1003,8 @@ export default function ReportingCommandCenter({
             outstandingReport={outstandingReport}
             isOutstandingLoading={isOutstandingLoading}
             outstandingError={outstandingError}
+            token={token}
+            locationName={activeWorkspace?.name || 'ShowtimePoolMechanics'}
           />
           </div>
         )

@@ -960,6 +960,15 @@ export async function computeLiveAppointmentReport(
 // 8b. ESTIMATES & INVOICES FETCHERS + COMPUTE
 // ==========================================
 
+// Strip "undefined"/"null" tokens that GHL produces when a contact has no last name
+function sanitizeContactName(raw: string | null | undefined): string {
+  if (!raw) return '';
+  return raw.split(/\s+/)
+    .filter(p => p && p.toLowerCase() !== 'undefined' && p.toLowerCase() !== 'null')
+    .join(' ')
+    .trim();
+}
+
 // GHL returns lowercase/underscore statuses — normalize to our uppercase display values
 function normalizeEstimateStatus(raw: string): string {
   const s = (raw || '').toLowerCase();
@@ -1106,8 +1115,8 @@ export async function computeLiveEstimatesInvoicesReport(
     else                       { aging.days61plus.count++; aging.days61plus.value += amtDue; }
 
     // contactDetails.name is a full name string; contactDetails.email is the email
-    const contactName = inv.contactDetails?.name || inv.contact?.name ||
-      (`${inv.contact?.firstName || ''} ${inv.contact?.lastName || ''}`.trim()) || 'Unknown';
+    const contactName = sanitizeContactName(inv.contactDetails?.name || inv.contact?.name ||
+      `${inv.contact?.firstName || ''} ${inv.contact?.lastName || ''}`) || 'Unknown';
 
     unpaidList.push({
       id: inv._id || inv.id || '',
@@ -1205,8 +1214,8 @@ export async function computeLiveOutstandingReport(workspaceId: string): Promise
   function buildEstimateRecord(e: any): OutstandingRecord {
     const sentDate = e.sentAt || e.issueDate || e.updatedAt || e.createdAt || '';
     const sentMs = sentDate ? new Date(sentDate).getTime() : null;
-    const contactName = e.contactDetails?.name || e.contact?.name ||
-      (`${e.contact?.firstName || ''} ${e.contact?.lastName || ''}`.trim()) || 'Unknown';
+    const contactName = sanitizeContactName(e.contactDetails?.name || e.contact?.name ||
+      `${e.contact?.firstName || ''} ${e.contact?.lastName || ''}`) || 'Unknown';
     return {
       id: e._id || e.id || '',
       number: e.estimateNumber || e.number || '',
@@ -1611,5 +1620,49 @@ export class LiveReportingService {
       }
       return { source: 'live' as const, data: null as any, warnings: [`Dev fallback: ${err.message}`], stale: false };
     }
+  }
+
+  // ── CSV EXPORT: raw records for client-side download ──────────────────────
+
+  static async getEstimatesExport(workspaceId: string) {
+    const settings = db.getReportingSettings(workspaceId);
+    if (settings.mode === 'MOCK') return { source: 'mock' as const, estimates: [], count: 0 };
+    let locationId = '';
+    try { locationId = resolveGHLAuthentication(workspaceId).locationId; }
+    catch (err: any) { throw new Error(`AUTH_ERROR: ${err.message}`); }
+    const raw = await fetchAllEstimates(workspaceId, locationId, {});
+    const isoDate = (s: string) => { if (!s) return ''; try { return new Date(s).toISOString().slice(0, 10); } catch { return ''; } };
+    const estimates = raw.map(e => ({
+      estimateNumber: e.estimateNumber || '',
+      contactName:    sanitizeContactName(e.contactDetails?.name || e.contact?.name || `${e.contact?.firstName || ''} ${e.contact?.lastName || ''}`) || '',
+      contactEmail:   e.contactDetails?.email || e.contact?.email || '',
+      status:         normalizeEstimateStatus(e.estimateStatus || e.status || ''),
+      total:          Number(e.total) || 0,
+      sentDate:       isoDate(e.sentAt || e.issueDate || ''),
+      createdAt:      isoDate(e.createdAt || ''),
+    }));
+    return { source: 'live' as const, estimates, count: estimates.length };
+  }
+
+  static async getInvoicesExport(workspaceId: string) {
+    const settings = db.getReportingSettings(workspaceId);
+    if (settings.mode === 'MOCK') return { source: 'mock' as const, invoices: [], count: 0 };
+    let locationId = '';
+    try { locationId = resolveGHLAuthentication(workspaceId).locationId; }
+    catch (err: any) { throw new Error(`AUTH_ERROR: ${err.message}`); }
+    const raw = await fetchAllInvoices(workspaceId, locationId, {});
+    const isoDate = (s: string) => { if (!s) return ''; try { return new Date(s).toISOString().slice(0, 10); } catch { return ''; } };
+    const invoices = raw.map(i => ({
+      invoiceNumber: i.invoiceNumber || i.number || '',
+      contactName:   sanitizeContactName(i.contactDetails?.name || i.contact?.name || `${i.contact?.firstName || ''} ${i.contact?.lastName || ''}`) || '',
+      contactEmail:  i.contactDetails?.email || i.contact?.email || '',
+      status:        normalizeInvoiceStatus(i.status || ''),
+      total:         Number(i.total) || 0,
+      amountDue:     Number(i.amountDue) || 0,
+      dueDate:       isoDate(i.dueDate || ''),
+      sentDate:      isoDate(i.sentAt || i.issueDate || ''),
+      createdAt:     isoDate(i.createdAt || ''),
+    }));
+    return { source: 'live' as const, invoices, count: invoices.length };
   }
 }
