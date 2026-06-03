@@ -1089,7 +1089,10 @@ export async function computeLiveEstimatesInvoicesReport(
   const invBillable = rawInvoices.filter(i => !['DRAFT', 'CANCELLED'].includes(invNorm(i)));
   const invTotalValue = invBillable.reduce((s, i) => s + (Number(i.total) || 0), 0);
   const invTotalPaid = rawInvoices.reduce((s, i) => s + (Number(i.amountPaid) || 0), 0);
-  const invTotalOutstanding = rawInvoices.reduce((s, i) => s + (Number(i.amountDue) || 0), 0);
+  // Only SENT/PARTIAL/OVERDUE count as "outstanding" — exclude DRAFT and CANCELLED
+  const invUnpaidStatuses = new Set(['SENT', 'PARTIAL', 'OVERDUE']);
+  const invUnpaid = rawInvoices.filter(i => invUnpaidStatuses.has(invNorm(i)));
+  const invTotalOutstanding = invUnpaid.reduce((s, i) => s + (Number(i.amountDue) || 0), 0);
 
   // ── AGING + UNPAID LIST ────────────────────────────────────
   const now = Date.now();
@@ -1101,7 +1104,7 @@ export async function computeLiveEstimatesInvoicesReport(
   };
   const unpaidList: EstimatesInvoicesReport['invoices']['unpaidList'] = [];
 
-  for (const inv of rawInvoices) {
+  for (const inv of invUnpaid) {
     const amtDue = Number(inv.amountDue) || 0;
     if (amtDue <= 0) continue;
 

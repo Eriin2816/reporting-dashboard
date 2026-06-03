@@ -1528,11 +1528,13 @@ async function computeLiveEstimatesInvoicesReport(workspaceId, filters = {}) {
   const invBillable = rawInvoices.filter(i => !["DRAFT","CANCELLED"].includes(invNorm(i)));
   const invTotalValue = invBillable.reduce((s, i) => s + (Number(i.total) || 0), 0);
   const invTotalPaid = rawInvoices.reduce((s, i) => s + (Number(i.amountPaid) || 0), 0);
-  const invTotalOutstanding = rawInvoices.reduce((s, i) => s + (Number(i.amountDue) || 0), 0);
+  const invUnpaidStatuses = new Set(["SENT", "PARTIAL", "OVERDUE"]);
+  const invUnpaid = rawInvoices.filter(i => invUnpaidStatuses.has(invNorm(i)));
+  const invTotalOutstanding = invUnpaid.reduce((s, i) => s + (Number(i.amountDue) || 0), 0);
   const now = Date.now();
   const aging = { current: { count: 0, value: 0 }, days1to30: { count: 0, value: 0 }, days31to60: { count: 0, value: 0 }, days61plus: { count: 0, value: 0 } };
   const unpaidList = [];
-  for (const inv of rawInvoices) {
+  for (const inv of invUnpaid) {
     const amtDue = Number(inv.amountDue) || 0;
     if (amtDue <= 0) continue;
     const dueMs = inv.dueDate ? new Date(inv.dueDate).getTime() : null;
