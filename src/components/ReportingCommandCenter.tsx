@@ -25,7 +25,7 @@ import AppointmentDashboardView from './AppointmentDashboardView';
 import MarketingDashboardView from './MarketingDashboardView';
 import EstimatesInvoicesDashboardView from './EstimatesInvoicesDashboardView';
 
-import { OwnerPerformanceReport, MarketingPerformanceReport, AppointmentDashboardReport, EstimatesInvoicesReport, IntegrationStatus, GA4Report, ApiResponse } from '../types';
+import { OwnerPerformanceReport, MarketingPerformanceReport, AppointmentDashboardReport, EstimatesInvoicesReport, OutstandingReport, IntegrationStatus, GA4Report, ApiResponse } from '../types';
 
 function getMonthToDateLA(): { start: string; end: string } {
   const fmt = new Intl.DateTimeFormat('en-CA', {
@@ -77,6 +77,9 @@ export default function ReportingCommandCenter({
   const [isPdfLoading, setIsPdfLoading] = useState<boolean>(false);
   const [estimatesReport, setEstimatesReport] = useState<EstimatesInvoicesReport | null>(null);
   const [isEstimatesLoading, setIsEstimatesLoading] = useState<boolean>(false);
+  const [outstandingReport, setOutstandingReport] = useState<OutstandingReport | null>(null);
+  const [isOutstandingLoading, setIsOutstandingLoading] = useState<boolean>(false);
+  const [outstandingError, setOutstandingError] = useState<string | null>(null);
   const [ga4Integration, setGa4Integration] = useState<IntegrationStatus | null>(null);
   const [ga4Report, setGa4Report] = useState<GA4Report | null>(null);
   const [isGa4Loading, setIsGa4Loading] = useState<boolean>(false);
@@ -171,13 +174,11 @@ export default function ReportingCommandCenter({
     async function fetchEstimates() {
       setIsEstimatesLoading(true);
       try {
-        const params = new URLSearchParams();
-        if (startDate) params.append('startDate', startDate);
-        if (endDate) params.append('endDate', endDate);
         const headers: Record<string, string> = {};
         const activeToken = token || localStorage.getItem('saas_token') || '';
         if (activeToken) headers['x-auth-token'] = activeToken;
-        const res = await fetch(`/api/reporting/estimates-invoices?${params}`, { headers });
+        // No date params — Estimates & Invoices tab is all-time, not date-filtered
+        const res = await fetch(`/api/reporting/estimates-invoices`, { headers });
         if (!active) return;
         const data: ApiResponse<EstimatesInvoicesReport> = await res.json();
         if (data.status === 'success') setEstimatesReport(data.data);
@@ -189,7 +190,33 @@ export default function ReportingCommandCenter({
     }
     fetchEstimates();
     return () => { active = false; };
-  }, [isEstimatesView, startDate, endDate, refreshTriggerSeq, token]);
+  }, [isEstimatesView, refreshTriggerSeq, token]);
+
+  // Lazy-load outstanding (all-time) — no date params, refetches only on Sync or first visit
+  useEffect(() => {
+    if (!isEstimatesView) return;
+    let active = true;
+    async function fetchOutstanding() {
+      setIsOutstandingLoading(true);
+      setOutstandingError(null);
+      try {
+        const activeToken = token || localStorage.getItem('saas_token') || '';
+        const headers: Record<string, string> = { 'x-auth-token': activeToken };
+        const res = await fetch(`/api/reporting/outstanding?_t=${Date.now()}`, { headers, cache: 'no-store' });
+        if (!active) return;
+        const data = await res.json();
+        if (data.status === 'success') setOutstandingReport(data.data);
+        else setOutstandingError(data.error || 'Failed to load outstanding data.');
+      } catch (err: any) {
+        if (active) setOutstandingError('Network error loading outstanding data.');
+        console.error('[Outstanding fetch]', err);
+      } finally {
+        if (active) setIsOutstandingLoading(false);
+      }
+    }
+    fetchOutstanding();
+    return () => { active = false; };
+  }, [isEstimatesView, refreshTriggerSeq, token]);
 
   // Lazy-load GA4 integration status + report only when marketing view is active
   const isMarketingView = dashboardType === 'marketing';
@@ -866,28 +893,30 @@ export default function ReportingCommandCenter({
             </div>
           )}
 
-          {/* Filter 2: Date Selector */}
-          <div className="space-y-1.5 flex flex-col justify-end">
-            <label className="text-[10px] font-extrabold uppercase tracking-widest text-[#64748B] flex items-center gap-1 select-none">
-              <Calendar className="w-3.5 h-3.5 text-[#1D4ED8]" />
-              Date Range Filters
-            </label>
-            <div className="flex items-center gap-1 bg-[#F8FAFC] border border-slate-200 rounded-lg px-2.5 py-1.5 shadow-2xs w-full">
-              <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className="bg-transparent text-xs font-bold text-slate-700 focus:outline-none w-full cursor-pointer"
-              />
-              <span className="text-[#64748B] text-xs font-semibold px-1 select-none">to</span>
-              <input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                className="bg-transparent text-xs font-bold text-slate-700 focus:outline-none w-full cursor-pointer"
-              />
+          {/* Filter 2: Date Selector — hidden on Estimates & Invoices (that tab is all-time) */}
+          {!isEstimatesView && (
+            <div className="space-y-1.5 flex flex-col justify-end">
+              <label className="text-[10px] font-extrabold uppercase tracking-widest text-[#64748B] flex items-center gap-1 select-none">
+                <Calendar className="w-3.5 h-3.5 text-[#1D4ED8]" />
+                Date Range Filters
+              </label>
+              <div className="flex items-center gap-1 bg-[#F8FAFC] border border-slate-200 rounded-lg px-2.5 py-1.5 shadow-2xs w-full">
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  className="bg-transparent text-xs font-bold text-slate-700 focus:outline-none w-full cursor-pointer"
+                />
+                <span className="text-[#64748B] text-xs font-semibold px-1 select-none">to</span>
+                <input
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  className="bg-transparent text-xs font-bold text-slate-700 focus:outline-none w-full cursor-pointer"
+                />
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Filter 3: Location */}
           <div className="space-y-1.5 flex flex-col justify-end">
@@ -901,8 +930,6 @@ export default function ReportingCommandCenter({
               className="bg-[#F8FAFC] border border-slate-200 hover:border-slate-300 rounded-lg py-2 px-3 text-xs font-semibold text-slate-705 focus:outline-none w-full cursor-pointer"
             >
               <option value="loc_g53h7s8a">Showtime Pool Mechanics</option>
-              <option value="loc_demo_sub">Showtime Inbound Dealers (Sub-account)</option>
-              <option value="loc_demo_back">Backyard Builders (Remodel sub)</option>
             </select>
           </div>
 
@@ -971,7 +998,12 @@ export default function ReportingCommandCenter({
           </div>
         ) : (
           <div className="transition-all duration-350" id="command-center-dashboard-stage">
-            <EstimatesInvoicesDashboardView reportData={estimatesReport} />
+            <EstimatesInvoicesDashboardView
+            reportData={estimatesReport}
+            outstandingReport={outstandingReport}
+            isOutstandingLoading={isOutstandingLoading}
+            outstandingError={outstandingError}
+          />
           </div>
         )
       ) : isLoading || !ownerReport || !marketingReport || !appointmentReport ? (

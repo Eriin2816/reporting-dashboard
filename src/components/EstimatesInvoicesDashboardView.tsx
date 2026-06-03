@@ -192,47 +192,6 @@ export default function EstimatesInvoicesDashboardView({ reportData, outstanding
   return (
     <div className="space-y-6" id="estimates-invoices-view">
 
-      {/* ── OUTSTANDING SECTION (ALL-TIME) ── */}
-      <div className="bg-white border border-[#E2E8F0] shadow-sm rounded-xl overflow-hidden">
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-5 py-4 border-b border-slate-100 bg-[#F8FAFC]">
-          <div className="flex items-center gap-2.5">
-            <CalendarClock className="w-5 h-5 text-[#1D4ED8]" />
-            <div>
-              <h3 className="text-sm font-extrabold text-[#0F172A]">Unpaid Invoices — Open &amp; Awaiting Payment</h3>
-              <p className="text-[10px] text-slate-500 font-semibold mt-0.5">All invoices with an outstanding balance (all-time)</p>
-            </div>
-          </div>
-          <span className="flex items-center gap-1 text-[9px] font-black uppercase tracking-widest bg-amber-50 text-amber-700 border border-amber-200 px-2.5 py-1 rounded-full whitespace-nowrap">
-            All-time · not affected by date filter
-          </span>
-        </div>
-
-        {isOutstandingLoading ? (
-          <div className="flex items-center gap-3 justify-center py-12">
-            <RefreshCw className="w-5 h-5 text-[#1D4ED8] animate-spin" />
-            <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Loading all-time outstanding…</span>
-          </div>
-        ) : outstandingError ? (
-          <div className="flex items-center gap-2.5 m-4 p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700 font-semibold">
-            <AlertCircle className="w-4 h-4 shrink-0" />
-            {outstandingError}
-          </div>
-        ) : outstandingReport ? (
-          <div>
-            <div className="flex items-center gap-3 px-5 py-3 bg-rose-50/60 border-b border-slate-100">
-              <Receipt className="w-4 h-4 text-rose-600" />
-              <span className="text-xs font-extrabold text-rose-900">Unpaid Invoices</span>
-              <span className="ml-auto flex items-center gap-3 text-xs font-bold text-rose-800">
-                <span>{outstandingReport.unpaidInvoices.count} record{outstandingReport.unpaidInvoices.count !== 1 ? 's' : ''}</span>
-                <span className="bg-rose-100 border border-rose-200 px-2 py-0.5 rounded-full font-black">{fmt$(outstandingReport.unpaidInvoices.totalValue)}</span>
-              </span>
-            </div>
-            <OutstandingTable records={outstandingReport.unpaidInvoices.records} emptyLabel="No unpaid invoices" />
-          </div>
-        ) : null}
-      </div>
-
       {/* ── SECTION TABS ── */}
       <div className="flex items-center gap-1 bg-slate-100 rounded-xl p-1 w-fit">
         <button
@@ -597,6 +556,46 @@ export default function EstimatesInvoicesDashboardView({ reportData, outstanding
           </div>
         </>
       )}
+
+      {/* ── UNPAID INVOICES (ALL-TIME) ── */}
+      <div className="bg-white border border-[#E2E8F0] shadow-sm rounded-xl overflow-hidden">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-5 py-4 border-b border-slate-100 bg-[#F8FAFC]">
+          <div className="flex items-center gap-2.5">
+            <CalendarClock className="w-5 h-5 text-[#1D4ED8]" />
+            <div>
+              <h3 className="text-sm font-extrabold text-[#0F172A]">Unpaid Invoices — Open &amp; Awaiting Payment</h3>
+              <p className="text-[10px] text-slate-500 font-semibold mt-0.5">All invoices with an outstanding balance (all-time)</p>
+            </div>
+          </div>
+          <span className="flex items-center gap-1 text-[9px] font-black uppercase tracking-widest bg-amber-50 text-amber-700 border border-amber-200 px-2.5 py-1 rounded-full whitespace-nowrap">
+            All-time · not affected by date filter
+          </span>
+        </div>
+
+        {isOutstandingLoading ? (
+          <div className="flex items-center gap-3 justify-center py-12">
+            <RefreshCw className="w-5 h-5 text-[#1D4ED8] animate-spin" />
+            <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Loading all-time outstanding…</span>
+          </div>
+        ) : outstandingError ? (
+          <div className="flex items-center gap-2.5 m-4 p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700 font-semibold">
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            {outstandingError}
+          </div>
+        ) : outstandingReport ? (
+          <div>
+            <div className="flex items-center gap-3 px-5 py-3 bg-rose-50/60 border-b border-slate-100">
+              <Receipt className="w-4 h-4 text-rose-600" />
+              <span className="text-xs font-extrabold text-rose-900">Unpaid Invoices</span>
+              <span className="ml-auto flex items-center gap-3 text-xs font-bold text-rose-800">
+                <span>{outstandingReport.unpaidInvoices.count} record{outstandingReport.unpaidInvoices.count !== 1 ? 's' : ''}</span>
+                <span className="bg-rose-100 border border-rose-200 px-2 py-0.5 rounded-full font-black">{fmt$(outstandingReport.unpaidInvoices.totalValue)}</span>
+              </span>
+            </div>
+            <OutstandingTable records={outstandingReport.unpaidInvoices.records} emptyLabel="No unpaid invoices" />
+          </div>
+        ) : null}
+      </div>
 
     </div>
   );
