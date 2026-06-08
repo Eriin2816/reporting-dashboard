@@ -251,7 +251,7 @@ function AppCockpit({ user, activeWorkspace, role, workspaces, token, logout, tr
   };
 
   return (
-    <div className="min-h-screen bg-[#f1f5f9] text-slate-900 flex antialiased font-sans">
+    <div className="h-screen bg-[#f1f5f9] text-slate-900 flex antialiased font-sans">
 
       {/* Mobile overlay backdrop */}
       <div
@@ -498,7 +498,7 @@ function AppCockpit({ user, activeWorkspace, role, workspaces, token, logout, tr
       </aside>
 
       {/* 2. MAIN HUB CANVAS */}
-      <main className="flex-1 flex flex-col min-w-0 min-h-screen overflow-x-hidden" id="main-content-hub">
+      <main className="flex-1 flex flex-col min-w-0 overflow-hidden" id="main-content-hub">
         
         {/* Global Hub Header bar */}
         <header className="bg-white border-b border-slate-200 px-4 md:px-8 py-4 flex flex-row items-center justify-between gap-3 shrink-0 shadow-xs">
@@ -549,7 +549,7 @@ function AppCockpit({ user, activeWorkspace, role, workspaces, token, logout, tr
         </header>
 
         {/* Dynamic content rendering with responsive inner wrapper */}
-        <div className="flex-1 p-6 overflow-y-auto w-full mx-auto" id="dynamic-reporting-scroller">
+        <div className="flex-1 p-6 pb-12 overflow-y-auto w-full mx-auto" id="dynamic-reporting-scroller">
           
           {/* Main notification Banner for empty/offline setup error fallback */}
           {errorState && (
