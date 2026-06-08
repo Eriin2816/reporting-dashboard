@@ -7,7 +7,6 @@ import {
   ExternalLink, 
   RefreshCw, 
   AlertCircle,
-  Sparkles,
   Building,
   KeyRound,
   Mail,
@@ -988,47 +987,6 @@ export default function SaaSAuthLayer({ children }: SaaSAuthLayerProps) {
             </form>
           )}
 
-          {/* PLAYGROUND SELECTOR EMBEDDED DIRECTLY IN THE LOGIN CARDS FOR QUICK EVALUATION */}
-          <div className="pt-4 border-t border-slate-100 space-y-3">
-            <div className="flex items-center justify-between text-[10px] font-black text-slate-400 uppercase tracking-wider">
-              <span className="flex items-center gap-1">
-                <Sparkles className="w-3 h-3 text-amber-500" /> Evaluator Quick Login
-              </span>
-              <span className="text-[9px] lowercase opacity-80">(Bypass authentication)</span>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2 text-[10px] font-mono">
-              {playgroundUsers.slice(0, 4).map((p, i) => (
-                <button
-                  key={i}
-                  type="button"
-                  onClick={() => handlePlaygroundSign(p.token)}
-                  className="p-2 text-left bg-[#f8fafc] border border-slate-205 hover:bg-blue-50 hover:border-blue-500 hover:text-blue-800 rounded-lg font-sans font-bold transition duration-150 cursor-pointer text-slate-600 truncate flex flex-col"
-                >
-                  <span className="text-[9px] text-[#1e293b] font-black">{p.role.replace('WORKSPACE_', '')}</span>
-                  <span className="text-[8px] text-slate-405 truncate">{p.name.split(' ')[0]} {p.name.split(' ')[1]}</span>
-                </button>
-              ))}
-            </div>
-
-            <div className="grid grid-cols-2 gap-2 text-[10px] font-mono">
-              {playgroundUsers.slice(4).map((p, i) => (
-                <button
-                  key={i}
-                  type="button"
-                  onClick={() => handlePlaygroundSign(p.token)}
-                  className="p-2 text-left bg-[#f8fafc] border border-slate-205 hover:bg-blue-50 hover:border-blue-500 hover:text-blue-800 rounded-lg font-sans font-bold transition duration-150 cursor-pointer text-slate-600 truncate flex flex-col"
-                >
-                  <span className="text-[9px] text-[#1e293b] font-black">{p.role === UserRole.WORKSPACE_OWNER ? 'TENANT_B' : p.role}</span>
-                  <span className="text-[8px] text-slate-405 truncate">{p.name}</span>
-                </button>
-              ))}
-            </div>
-
-            <div className="text-[9px] text-center text-slate-405 leading-relaxed bg-[#f8fafc] p-2.5 rounded-xl border border-slate-205 font-medium">
-              Evaluating **Data Isolation**: Switch to <b>TENANT_B BOB</b> to view a completely separate, clean dashboard stream. Switching back to <b>Marcus (WORKSPACE OWNER)</b> restores pool maintenance data.
-            </div>
-          </div>
 
         </div>
       </div>
