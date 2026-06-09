@@ -25,7 +25,7 @@ import AppointmentDashboardView from './AppointmentDashboardView';
 import MarketingDashboardView from './MarketingDashboardView';
 import EstimatesInvoicesDashboardView from './EstimatesInvoicesDashboardView';
 
-import { OwnerPerformanceReport, MarketingPerformanceReport, AppointmentDashboardReport, EstimatesInvoicesReport, OutstandingReport, IntegrationStatus, GA4Report, ApiResponse } from '../types';
+import { OwnerPerformanceReport, MarketingPerformanceReport, AppointmentDashboardReport, EstimatesInvoicesReport, OutstandingReport, IntegrationStatus, GA4Report, MetaAdsReport, ApiResponse } from '../types';
 
 function getMonthToDateLA(): { start: string; end: string } {
   const fmt = new Intl.DateTimeFormat('en-CA', {
@@ -84,9 +84,15 @@ export default function ReportingCommandCenter({
   const [ga4Report, setGa4Report] = useState<GA4Report | null>(null);
   const [isGa4Loading, setIsGa4Loading] = useState<boolean>(false);
   const [ga4RefreshSeq, setGa4RefreshSeq] = useState<number>(0);
+  const [metaIntegration, setMetaIntegration] = useState<IntegrationStatus | null>(null);
+  const [metaReport, setMetaReport] = useState<MetaAdsReport | null>(null);
+  const [isMetaLoading, setIsMetaLoading] = useState<boolean>(false);
+  const [metaRefreshSeq, setMetaRefreshSeq] = useState<number>(0);
 
   // Local re-fetch sequencer trigger
   const [refreshTriggerSeq, setRefreshTriggerSeq] = useState<number>(0);
+  const [forceRefresh, setForceRefresh] = useState<boolean>(false);
+  const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
 
   // Clipboard copy and modal fallback states
   const [copiedSuccess, setCopiedSuccess] = useState<boolean>(false);
@@ -112,20 +118,17 @@ export default function ReportingCommandCenter({
     async function fetchPayloads() {
       setIsLoading(true);
       try {
-        // Build query string
         const params = new URLSearchParams();
         if (startDate) params.append('startDate', startDate);
         if (endDate) params.append('endDate', endDate);
+        if (forceRefresh) params.append('force', '1');
 
         const queryStr = params.toString();
-
         const headers: Record<string, string> = {};
         const activeToken = token || localStorage.getItem('saas_token') || '';
-        if (activeToken) {
-          headers['x-auth-token'] = activeToken;
-        }
+        if (activeToken) headers['x-auth-token'] = activeToken;
 
-        // Query the endpoints in parallel with full auth metadata
+        // Fetch all three in parallel; process each independently as it resolves
         const [ownerRes, markRes, aptRes] = await Promise.all([
           fetch(`/api/reporting/owner-performance?${queryStr}`, { headers }),
           fetch(`/api/reporting/marketing-performance?${queryStr}`, { headers }),
@@ -134,36 +137,50 @@ export default function ReportingCommandCenter({
 
         if (!active) return;
 
-        const ownerData: ApiResponse<OwnerPerformanceReport> = await ownerRes.json();
-        const markData: ApiResponse<MarketingPerformanceReport> = await markRes.json();
-        const aptData: ApiResponse<AppointmentDashboardReport> = await aptRes.json();
+        const [ownerData, markData, aptData]: [
+          ApiResponse<OwnerPerformanceReport>,
+          ApiResponse<MarketingPerformanceReport>,
+          ApiResponse<AppointmentDashboardReport>
+        ] = await Promise.all([ownerRes.json(), markRes.json(), aptRes.json()]);
 
-        if (ownerData.status === 'success' && markData.status === 'success') {
+        if (!active) return;
+
+        if (ownerData.status === 'success') {
           setOwnerReport(ownerData.data);
+          if (ownerData.cachedAt) setLastSyncedAt(ownerData.cachedAt);
+        }
+        if (markData.status === 'success') {
           setMarketingReport(markData.data);
-          setResponseContext({
-            source: ownerData.source,
-            generatedAt: ownerData.generatedAt,
-            stale: ownerData.stale,
-            warnings: [...(ownerData.warnings || []), ...(markData.warnings || []), ...(aptData.warnings || [])],
-            unavailableMetrics: [...(ownerData.unavailableMetrics || []), ...(markData.unavailableMetrics || []), ...(aptData.unavailableMetrics || [])]
-          });
+          if (markData.cachedAt) setLastSyncedAt(prev => markData.cachedAt! > (prev || 0) ? markData.cachedAt! : prev);
         }
         if (aptData.status === 'success') {
           setAppointmentReport(aptData.data);
         }
+
+        // Merge context from all three responses
+        if (ownerData.status === 'success' || markData.status === 'success') {
+          const primary = ownerData.status === 'success' ? ownerData : markData;
+          setResponseContext({
+            source: primary.source,
+            generatedAt: primary.generatedAt,
+            stale: primary.stale,
+            warnings: [...(ownerData.warnings || []), ...(markData.warnings || []), ...(aptData.warnings || [])],
+            unavailableMetrics: [...(ownerData.unavailableMetrics || []), ...(markData.unavailableMetrics || []), ...(aptData.unavailableMetrics || [])]
+          });
+        }
       } catch (err) {
         console.error("Failed to compile reporting components:", err);
       } finally {
-        if (active) setIsLoading(false);
+        if (active) {
+          setIsLoading(false);
+          setForceRefresh(false);
+        }
       }
     }
 
     fetchPayloads();
 
-    return () => {
-      active = false;
-    };
+    return () => { active = false; };
   }, [startDate, endDate, location, refreshTriggerSeq, token]);
 
   // Lazy-load estimates/invoices only when that view is active
@@ -177,11 +194,14 @@ export default function ReportingCommandCenter({
         const headers: Record<string, string> = {};
         const activeToken = token || localStorage.getItem('saas_token') || '';
         if (activeToken) headers['x-auth-token'] = activeToken;
-        // No date params — Estimates & Invoices tab is all-time, not date-filtered
-        const res = await fetch(`/api/reporting/estimates-invoices`, { headers });
+        const url = forceRefresh ? `/api/reporting/estimates-invoices?force=1` : `/api/reporting/estimates-invoices`;
+        const res = await fetch(url, { headers });
         if (!active) return;
         const data: ApiResponse<EstimatesInvoicesReport> = await res.json();
-        if (data.status === 'success') setEstimatesReport(data.data);
+        if (data.status === 'success') {
+          setEstimatesReport(data.data);
+          if (data.cachedAt) setLastSyncedAt(data.cachedAt);
+        }
       } catch (err) {
         console.error('[Estimates fetch]', err);
       } finally {
@@ -202,10 +222,14 @@ export default function ReportingCommandCenter({
       try {
         const activeToken = token || localStorage.getItem('saas_token') || '';
         const headers: Record<string, string> = { 'x-auth-token': activeToken };
-        const res = await fetch(`/api/reporting/outstanding?_t=${Date.now()}`, { headers, cache: 'no-store' });
+        const suffix = forceRefresh ? `force=1&_t=${Date.now()}` : `_t=${Date.now()}`;
+        const res = await fetch(`/api/reporting/outstanding?${suffix}`, { headers, cache: 'no-store' });
         if (!active) return;
         const data = await res.json();
-        if (data.status === 'success') setOutstandingReport(data.data);
+        if (data.status === 'success') {
+          setOutstandingReport(data.data);
+          if (data.cachedAt) setLastSyncedAt(data.cachedAt);
+        }
         else setOutstandingError(data.error || 'Failed to load outstanding data.');
       } catch (err: any) {
         if (active) setOutstandingError('Network error loading outstanding data.');
@@ -218,13 +242,14 @@ export default function ReportingCommandCenter({
     return () => { active = false; };
   }, [isEstimatesView, refreshTriggerSeq, token]);
 
-  // Lazy-load GA4 integration status + report only when marketing view is active
+  // Lazy-load GA4 + Meta Ads integration status + reports only when marketing view is active
   const isMarketingView = dashboardType === 'marketing';
   useEffect(() => {
     if (!isMarketingView) return;
     let active = true;
-    async function fetchGA4() {
+    async function fetchMarketingIntegrations() {
       setIsGa4Loading(true);
+      setIsMetaLoading(true);
       try {
         const params = new URLSearchParams();
         if (startDate) params.append('startDate', startDate);
@@ -232,31 +257,41 @@ export default function ReportingCommandCenter({
         const activeToken = token || localStorage.getItem('saas_token') || '';
         const headers: Record<string, string> = { 'x-auth-token': activeToken };
         const cacheBust = `_t=${Date.now()}`;
-        const [statusRes, reportRes] = await Promise.all([
+        const [statusRes, ga4Res, metaRes] = await Promise.all([
           fetch(`/api/integrations/status?${cacheBust}`, { headers, cache: 'no-store' }),
-          fetch(`/api/reporting/ga4?${params}&${cacheBust}`, { headers, cache: 'no-store' })
+          fetch(`/api/reporting/ga4?${params}&${cacheBust}`, { headers, cache: 'no-store' }),
+          fetch(`/api/reporting/meta-ads?${params}&${cacheBust}`, { headers, cache: 'no-store' })
         ]);
         if (!active) return;
         const statusData = await statusRes.json();
-        const reportData = await reportRes.json();
+        const ga4Data = await ga4Res.json();
+        const metaData = await metaRes.json();
         if (statusData.status === 'success') {
           const ga4 = (statusData.integrations || []).find((i: any) => i.provider === 'google_analytics');
           setGa4Integration(ga4 || { provider: 'google_analytics', status: 'NOT_CONNECTED', propertyId: null, propertyName: null, connectedAt: null });
+          const meta = (statusData.integrations || []).find((i: any) => i.provider === 'meta_ads');
+          setMetaIntegration(meta || { provider: 'meta_ads', status: 'NOT_CONNECTED', propertyId: null, propertyName: null, connectedAt: null });
         }
-        if (reportData.status === 'success' && reportData.data) {
-          setGa4Report(reportData.data);
-        } else if (reportData.status === 'success' && !reportData.connected) {
+        if (ga4Data.status === 'success' && ga4Data.data) {
+          setGa4Report(ga4Data.data);
+        } else if (ga4Data.status === 'success' && !ga4Data.connected) {
           setGa4Report(null);
         }
+        if (metaData.status === 'success' && metaData.data) {
+          setMetaReport(metaData.data);
+        }
       } catch (err) {
-        console.error('[GA4 fetch]', err);
+        console.error('[Marketing integrations fetch]', err);
       } finally {
-        if (active) setIsGa4Loading(false);
+        if (active) {
+          setIsGa4Loading(false);
+          setIsMetaLoading(false);
+        }
       }
     }
-    fetchGA4();
+    fetchMarketingIntegrations();
     return () => { active = false; };
-  }, [isMarketingView, startDate, endDate, refreshTriggerSeq, ga4RefreshSeq, token]);
+  }, [isMarketingView, startDate, endDate, refreshTriggerSeq, ga4RefreshSeq, metaRefreshSeq, token]);
 
   // Determine active custom filters to display summary
   const getActiveFiltersList = () => {
@@ -290,8 +325,9 @@ export default function ReportingCommandCenter({
     setLocation('loc_g53h7s8a');
   };
 
-  // Manual fast layout reload
+  // Manual refresh — force-bypass server cache + bump seq to retrigger all fetch effects
   const handleManualRefresh = () => {
+    setForceRefresh(true);
     setRefreshTriggerSeq(prev => prev + 1);
   };
 
@@ -831,12 +867,25 @@ export default function ReportingCommandCenter({
             <button
               onClick={handleManualRefresh}
               disabled={isSyncing || isLoading}
-              title="Sync metrics and refresh raw data from GoHighLevel V2 pipeline"
+              title="Force-refresh all data from GoHighLevel — bypasses server cache"
               className="flex items-center gap-1.5 text-xs bg-white border border-slate-205 hover:bg-slate-50 disabled:bg-slate-100 text-slate-700 hover:text-slate-900 px-3 py-1.5 rounded-lg font-bold shadow-2xs transition cursor-pointer"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isSyncing || isLoading ? 'animate-spin text-blue-600' : 'text-slate-500'}`} />
-              <span>Sync</span>
+              <span>{isSyncing || isLoading ? 'Syncing...' : 'Sync'}</span>
             </button>
+            {lastSyncedAt && !isLoading && (
+              <span className="text-[10px] text-slate-400 font-medium whitespace-nowrap" title={new Date(lastSyncedAt).toLocaleString()}>
+                <Clock className="w-3 h-3 inline-block mr-0.5 mb-0.5" />
+                {(() => {
+                  const diffMs = Date.now() - lastSyncedAt;
+                  const diffMin = Math.floor(diffMs / 60000);
+                  if (diffMin < 1) return 'just now';
+                  if (diffMin < 60) return `${diffMin}m ago`;
+                  const diffHr = Math.floor(diffMin / 60);
+                  return `${diffHr}h ago`;
+                })()}
+              </span>
+            )}
 
             {/* Copy summary button */}
             <button
@@ -1035,6 +1084,10 @@ export default function ReportingCommandCenter({
               isGa4Loading={isGa4Loading}
               token={token}
               onGA4Refresh={() => setGa4RefreshSeq(prev => prev + 1)}
+              metaIntegration={metaIntegration}
+              metaReport={metaReport}
+              isMetaLoading={isMetaLoading}
+              onMetaRefresh={() => setMetaRefreshSeq(prev => prev + 1)}
             />
           )}
         </div>

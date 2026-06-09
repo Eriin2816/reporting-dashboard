@@ -5,7 +5,8 @@
 
 import React, { useState } from 'react';
 import GoogleAnalyticsPanel from './GoogleAnalyticsPanel';
-import { IntegrationStatus, GA4Report } from '../types';
+import MetaAdsPanel from './MetaAdsPanel';
+import { IntegrationStatus, GA4Report, MetaAdsReport } from '../types';
 import { 
   Share2, 
   TrendingUp, 
@@ -40,9 +41,13 @@ interface MarketingDashboardViewProps {
   isGa4Loading?: boolean;
   token?: string;
   onGA4Refresh?: () => void;
+  metaIntegration?: IntegrationStatus | null;
+  metaReport?: MetaAdsReport | null;
+  isMetaLoading?: boolean;
+  onMetaRefresh?: () => void;
 }
 
-export default function MarketingDashboardView({ reportData, ga4Integration, ga4Report, isGa4Loading, token, onGA4Refresh }: MarketingDashboardViewProps) {
+export default function MarketingDashboardView({ reportData, ga4Integration, ga4Report, isGa4Loading, token, onGA4Refresh, metaIntegration, metaReport, isMetaLoading, onMetaRefresh }: MarketingDashboardViewProps) {
   const { summary, leadsBySource, leadsByCampaign, bookingsBySource, wonRevenueBySource, campaignBreakdown, trends } = reportData;
 
   const [activeChannel, setActiveChannel] = useState<string>(Object.keys(leadsBySource)[0] || '');
@@ -291,19 +296,28 @@ export default function MarketingDashboardView({ reportData, ga4Integration, ga4
         </div>
       </div>
 
-      {/* Google Analytics 4 Integration Panel */}
+      {/* External Analytics Integration Panels */}
       <div className="pt-2">
         <div className="flex items-center gap-3 mb-4">
           <span className="text-[9px] text-slate-400 uppercase tracking-widest font-extrabold">External Analytics Integrations</span>
           <div className="flex-1 h-[1px] bg-slate-200" />
         </div>
-        <GoogleAnalyticsPanel
-          integration={ga4Integration ?? null}
-          ga4Report={ga4Report ?? null}
-          isLoading={!!isGa4Loading}
-          token={token}
-          onRefresh={onGA4Refresh ?? (() => {})}
-        />
+        <div className="space-y-5">
+          <GoogleAnalyticsPanel
+            integration={ga4Integration ?? null}
+            ga4Report={ga4Report ?? null}
+            isLoading={!!isGa4Loading}
+            token={token}
+            onRefresh={onGA4Refresh ?? (() => {})}
+          />
+          <MetaAdsPanel
+            integration={metaIntegration ?? null}
+            metaReport={metaReport ?? null}
+            isLoading={!!isMetaLoading}
+            token={token}
+            onRefresh={onMetaRefresh ?? (() => {})}
+          />
+        </div>
       </div>
     </div>
   );

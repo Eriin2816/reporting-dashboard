@@ -830,6 +830,10 @@ function getDashboardMetrics() {
 // src/ghlService.ts
 var globalRateLimits = { remaining: 100, limit: 100, resetTime: 0 };
 var serverCacheMemory = {};
+var rawEstInvCache = {};
+var RAW_EST_INV_TTL_MS = 10 * 60 * 1e3;
+var rawCrmCache = {};
+var RAW_CRM_TTL_MS = 10 * 60 * 1e3;
 function resolveGHLAuthentication(workspaceId) {
   const connection = db.getGHLConnection(workspaceId);
   if (!connection || !connection.apiKey) {
@@ -934,6 +938,8 @@ function setReportCache(workspaceId, cacheKey, data) {
 }
 function invalidateWorkspaceCacheStore(workspaceId) {
   Object.keys(serverCacheMemory).filter((k) => k.startsWith(`${workspaceId}_`)).forEach((k) => delete serverCacheMemory[k]);
+  delete rawEstInvCache[workspaceId];
+  Object.keys(rawCrmCache).filter((k) => k.startsWith(`${workspaceId}_`)).forEach((k) => delete rawCrmCache[k]);
   console.log(`[Cache] Flushed for workspace: ${workspaceId}`);
 }
 function isDateInFilterRange(itemDateStr, startDate, endDate) {
@@ -1030,6 +1036,14 @@ async function fetchAllConversations(workspaceId) {
   return all;
 }
 async function getLiveCRMData(workspaceId, opts = {}) {
+  const crmCacheKey = `${workspaceId}_${opts.startDate || ""}_${opts.endDate || ""}`;
+  if (!opts.force) {
+    const cached = rawCrmCache[crmCacheKey];
+    if (cached && Date.now() - cached.cachedAt < RAW_CRM_TTL_MS) {
+      console.log(`[RawCrmCache] HIT for ${workspaceId}`);
+      return cached.data;
+    }
+  }
   const warnings = [];
   const unavailableMetrics = [];
   let locationId = "";
@@ -1176,7 +1190,9 @@ async function getLiveCRMData(workspaceId, opts = {}) {
       }
     })()
   ]);
-  return { contacts, opportunities, appointments, users, conversations, warnings, unavailableMetrics };
+  const result = { contacts, opportunities, appointments, users, conversations, warnings, unavailableMetrics };
+  rawCrmCache[crmCacheKey] = { data: result, cachedAt: Date.now() };
+  return result;
 }
 async function computeLiveOverviewReport(workspaceId, filters = {}) {
   const crm = await getLiveCRMData(workspaceId, filters);
@@ -1451,35 +1467,67 @@ function normalizeInvoiceStatus(raw) {
   return s.toUpperCase();
 }
 
-// Estimates: path is /invoices/estimate/list (singular + /list), offset-based pagination
+// Estimates: parallel page fetching — page 0 first for total, remaining pages in parallel
 async function fetchAllEstimates(workspaceId, locationId, opts = {}) {
-  const all = [];
-  for (let offset = 0; offset < 10000; offset += 100) {
+  const makeParams = (offset) => {
     const p = new URLSearchParams({ altId: locationId, altType: "location", limit: "100", offset: String(offset) });
     if (opts.startDate) p.set("startDate", opts.startDate);
     if (opts.endDate) p.set("endDate", opts.endDate);
-    const res = await fetchFromGHLAPI(`invoices/estimate/list?${p}`, workspaceId);
-    const batch = res.data?.estimates ?? [];
-    const total = Number(res.data?.total) || 0;
-    all.push(...batch);
-    if (batch.length < 100 || (total > 0 && offset + 100 >= total)) break;
+    return p.toString();
+  };
+  const res0 = await fetchFromGHLAPI(`invoices/estimate/list?${makeParams(0)}`, workspaceId);
+  const batch0 = res0.data?.estimates ?? [];
+  const total = Number(res0.data?.total) || 0;
+  if (batch0.length < 100 || total <= 100) return batch0;
+  const remainingOffsets = [];
+  for (let off = 100; off < Math.min(total, 10000); off += 100) remainingOffsets.push(off);
+  const all = [...batch0];
+  for (let i = 0; i < remainingOffsets.length; i += 5) {
+    const chunk = remainingOffsets.slice(i, i + 5);
+    const results = await Promise.all(chunk.map(off => fetchFromGHLAPI(`invoices/estimate/list?${makeParams(off)}`, workspaceId)));
+    results.forEach(r => all.push(...(r.data?.estimates ?? [])));
   }
   return all;
 }
-// Invoices: offset-based pagination, response: { invoices: [...], total: N }
+// Invoices: parallel page fetching — same strategy as fetchAllEstimates
 async function fetchAllInvoicesGHL(workspaceId, locationId, opts = {}) {
-  const all = [];
-  for (let offset = 0; offset < 10000; offset += 100) {
+  const makeParams = (offset) => {
     const p = new URLSearchParams({ altId: locationId, altType: "location", limit: "100", offset: String(offset) });
     if (opts.startDate) p.set("startDate", opts.startDate);
     if (opts.endDate) p.set("endDate", opts.endDate);
-    const res = await fetchFromGHLAPI(`invoices/?${p}`, workspaceId);
-    const batch = res.data?.invoices ?? [];
-    const total = Number(res.data?.total) || 0;
-    all.push(...batch);
-    if (batch.length < 100 || (total > 0 && offset + 100 >= total)) break;
+    return p.toString();
+  };
+  const res0 = await fetchFromGHLAPI(`invoices/?${makeParams(0)}`, workspaceId);
+  const batch0 = res0.data?.invoices ?? [];
+  const total = Number(res0.data?.total) || 0;
+  if (batch0.length < 100 || total <= 100) return batch0;
+  const remainingOffsets = [];
+  for (let off = 100; off < Math.min(total, 10000); off += 100) remainingOffsets.push(off);
+  const all = [...batch0];
+  for (let i = 0; i < remainingOffsets.length; i += 5) {
+    const chunk = remainingOffsets.slice(i, i + 5);
+    const results = await Promise.all(chunk.map(off => fetchFromGHLAPI(`invoices/?${makeParams(off)}`, workspaceId)));
+    results.forEach(r => all.push(...(r.data?.invoices ?? [])));
   }
   return all;
+}
+// Shared raw-data helper: serves rawEstimates+rawInvoices from in-memory cache (10 min TTL).
+// Both computeLiveEstimatesInvoicesReport and computeLiveOutstandingReport call this
+// so the same GHL records are never downloaded twice within the same process window.
+async function getOrFetchRawEstInv(workspaceId, locationId, force = false) {
+  const cached = rawEstInvCache[workspaceId];
+  if (!force && cached && Date.now() - cached.cachedAt < RAW_EST_INV_TTL_MS) {
+    console.log(`[RawEstInvCache] HIT for ${workspaceId}`);
+    return { rawEstimates: cached.rawEstimates, rawInvoices: cached.rawInvoices };
+  }
+  let rawEstimates = [];
+  let rawInvoices = [];
+  await Promise.all([
+    (async () => { try { rawEstimates = await fetchAllEstimates(workspaceId, locationId, {}); } catch (e) { console.warn("[RawEstInvCache] estimates fetch failed", e?.message); } })(),
+    (async () => { try { rawInvoices  = await fetchAllInvoicesGHL(workspaceId, locationId, {});  } catch (e) { console.warn("[RawEstInvCache] invoices fetch failed",  e?.message); } })()
+  ]);
+  rawEstInvCache[workspaceId] = { rawEstimates, rawInvoices, cachedAt: Date.now() };
+  return { rawEstimates, rawInvoices };
 }
 async function computeLiveEstimatesInvoicesReport(workspaceId, filters = {}) {
   const warnings = [];
@@ -1494,10 +1542,9 @@ async function computeLiveEstimatesInvoicesReport(workspaceId, filters = {}) {
   let rawEstimates = [];
   let rawInvoices = [];
   if (locationId) {
-    await Promise.all([
-      (async () => { try { rawEstimates = await fetchAllEstimates(workspaceId, locationId, filters); } catch (err) { warnings.push(`Estimates unavailable: ${err.message}`); unavailableMetrics.push("estimates"); } })(),
-      (async () => { try { rawInvoices = await fetchAllInvoicesGHL(workspaceId, locationId, filters); } catch (err) { warnings.push(`Invoices unavailable: ${err.message}`); unavailableMetrics.push("invoices"); } })()
-    ]);
+    try {
+      ({ rawEstimates, rawInvoices } = await getOrFetchRawEstInv(workspaceId, locationId, !!filters.force));
+    } catch (err) { warnings.push(`Estimates/Invoices unavailable: ${err.message}`); unavailableMetrics.push("estimates", "invoices"); }
   }
   const estNorm = (e) => normalizeEstimateStatus(e.estimateStatus || e.status || "");
   const estByStatus = {};
@@ -1789,14 +1836,14 @@ var LiveReportingService = class {
       return { source: "mock", data: getOwnerPerformanceReport(filters), warnings: [], unavailableMetrics: [], stale: false };
     }
     const cacheKey = `owner_${filters.userId||"all"}_${filters.source||"all"}_${filters.startDate||""}_${filters.endDate||""}`;
-    const cached = getReportCache(workspaceId, cacheKey);
-    if (cached && !cached.stale) {
-      return { source: "live", data: cached.data, warnings: [], unavailableMetrics: [], stale: false };
+    if (!filters.force) {
+      const cached = getReportCache(workspaceId, cacheKey);
+      if (cached && !cached.stale) return { source: "live", data: cached.data, warnings: [], unavailableMetrics: [], stale: false, cachedAt: serverCacheMemory[`${workspaceId}_${cacheKey}`]?.timestamp };
     }
     try {
       const result = await computeLiveOwnerReport(workspaceId, filters);
       setReportCache(workspaceId, cacheKey, result.data);
-      return { source: "live", data: result.data, warnings: result.warnings, unavailableMetrics: result.unavailableMetrics, stale: false };
+      return { source: "live", data: result.data, warnings: result.warnings, unavailableMetrics: result.unavailableMetrics, stale: false, cachedAt: Date.now() };
     } catch (err) {
       console.error("[LiveReportingService] Owner failed:", err.message);
       if (isProd) {
@@ -1812,14 +1859,14 @@ var LiveReportingService = class {
       return { source: "mock", data: getMarketingPerformanceReport(filters), warnings: [], unavailableMetrics: [], stale: false };
     }
     const cacheKey = `marketing_${filters.source||"all"}_${filters.campaign||"all"}_${filters.startDate||""}_${filters.endDate||""}`;
-    const cached = getReportCache(workspaceId, cacheKey);
-    if (cached && !cached.stale) {
-      return { source: "live", data: cached.data, warnings: [], unavailableMetrics: [], stale: false };
+    if (!filters.force) {
+      const cached = getReportCache(workspaceId, cacheKey);
+      if (cached && !cached.stale) return { source: "live", data: cached.data, warnings: [], unavailableMetrics: [], stale: false, cachedAt: serverCacheMemory[`${workspaceId}_${cacheKey}`]?.timestamp };
     }
     try {
       const result = await computeLiveMarketingReport(workspaceId, filters);
       setReportCache(workspaceId, cacheKey, result.data);
-      return { source: "live", data: result.data, warnings: result.warnings, unavailableMetrics: result.unavailableMetrics, stale: false };
+      return { source: "live", data: result.data, warnings: result.warnings, unavailableMetrics: result.unavailableMetrics, stale: false, cachedAt: Date.now() };
     } catch (err) {
       console.error("[LiveReportingService] Marketing failed:", err.message);
       if (isProd) {
@@ -1857,12 +1904,14 @@ var LiveReportingService = class {
       return { source: "mock", data: mockData, warnings: [], unavailableMetrics: ["avgDaysToPayment"], stale: false };
     }
     const cacheKey = `estimates_invoices_${filters.startDate || ""}_${filters.endDate || ""}`;
-    const cached = getReportCache(workspaceId, cacheKey);
-    if (cached && !cached.stale) return { source: "live", data: cached.data, warnings: [], unavailableMetrics: [], stale: false };
+    if (!filters.force) {
+      const cached = getReportCache(workspaceId, cacheKey);
+      if (cached && !cached.stale) return { source: "live", data: cached.data, warnings: [], unavailableMetrics: [], stale: false, cachedAt: serverCacheMemory[`${workspaceId}_${cacheKey}`]?.timestamp };
+    }
     try {
       const result = await computeLiveEstimatesInvoicesReport(workspaceId, filters);
       setReportCache(workspaceId, cacheKey, result.data);
-      return { source: "live", data: result.data, warnings: result.warnings, unavailableMetrics: result.unavailableMetrics, stale: false };
+      return { source: "live", data: result.data, warnings: result.warnings, unavailableMetrics: result.unavailableMetrics, stale: false, cachedAt: Date.now() };
     } catch (err) {
       console.error("[LiveReportingService] EstimatesInvoices failed:", err.message);
       if (isProd) return { source: "live", data: null, error: err.message, warnings: [`Live data unavailable: ${err.message}`], unavailableMetrics: ["all"], stale: false };
@@ -1899,14 +1948,14 @@ var LiveReportingService = class {
       return { source: "mock", data: mockData, warnings: [], unavailableMetrics: [], stale: false };
     }
     const cacheKey = `appointment_${filters.userId || "all"}_${filters.startDate || ""}_${filters.endDate || ""}`;
-    const cached = getReportCache(workspaceId, cacheKey);
-    if (cached && !cached.stale) {
-      return { source: "live", data: cached.data, warnings: [], unavailableMetrics: [], stale: false };
+    if (!filters.force) {
+      const cached = getReportCache(workspaceId, cacheKey);
+      if (cached && !cached.stale) return { source: "live", data: cached.data, warnings: [], unavailableMetrics: [], stale: false, cachedAt: serverCacheMemory[`${workspaceId}_${cacheKey}`]?.timestamp };
     }
     try {
       const result = await computeLiveAppointmentReport(workspaceId, filters);
       setReportCache(workspaceId, cacheKey, result.data);
-      return { source: "live", data: result.data, warnings: result.warnings, unavailableMetrics: result.unavailableMetrics, stale: false };
+      return { source: "live", data: result.data, warnings: result.warnings, unavailableMetrics: result.unavailableMetrics, stale: false, cachedAt: Date.now() };
     } catch (err) {
       console.error("[LiveReportingService] Appointment failed:", err.message);
       if (isProd) {
@@ -1920,7 +1969,7 @@ var LiveReportingService = class {
 const PENDING_ESTIMATE_STATUSES = new Set(["SENT", "VIEWED"]);
 const UNPAID_INVOICE_STATUSES = new Set(["SENT", "PARTIAL", "OVERDUE"]);
 
-async function computeLiveOutstandingReport(workspaceId) {
+async function computeLiveOutstandingReport(workspaceId, force = false) {
   const warnings = [];
   const now = Date.now();
   let locationId = "";
@@ -1929,10 +1978,9 @@ async function computeLiveOutstandingReport(workspaceId) {
   let rawEstimates = [];
   let rawInvoices = [];
   if (locationId) {
-    await Promise.all([
-      (async () => { try { rawEstimates = await fetchAllEstimates(workspaceId, locationId, {}); } catch (err) { warnings.push(`Estimates unavailable: ${err.message}`); } })(),
-      (async () => { try { rawInvoices = await fetchAllInvoicesGHL(workspaceId, locationId, {}); } catch (err) { warnings.push(`Invoices unavailable: ${err.message}`); } })()
-    ]);
+    try {
+      ({ rawEstimates, rawInvoices } = await getOrFetchRawEstInv(workspaceId, locationId, force));
+    } catch (err) { warnings.push(`Estimates/Invoices unavailable: ${err.message}`); }
   } else {
     warnings.push("GHL Location ID not configured — outstanding data unavailable.");
   }
@@ -1980,7 +2028,7 @@ async function computeLiveOutstandingReport(workspaceId) {
 }
 
 // Append getOutstandingReport to LiveReportingService prototype
-LiveReportingService.getOutstandingReport = async function(workspaceId) {
+LiveReportingService.getOutstandingReport = async function(workspaceId, force = false) {
   const settings = db.getReportingSettings(workspaceId);
   if (settings.mode === "MOCK") {
     const now = Date.now();
@@ -2004,12 +2052,14 @@ LiveReportingService.getOutstandingReport = async function(workspaceId) {
       warnings: [], stale: false
     };
   }
-  const cached = getReportCache(workspaceId, "outstanding_alltime");
-  if (cached && !cached.stale) return { source: "live", data: cached.data, warnings: [], stale: false };
+  if (!force) {
+    const cached = getReportCache(workspaceId, "outstanding_alltime");
+    if (cached && !cached.stale) return { source: "live", data: cached.data, warnings: [], stale: false, cachedAt: serverCacheMemory[`${workspaceId}_outstanding_alltime`]?.timestamp };
+  }
   try {
-    const result = await computeLiveOutstandingReport(workspaceId);
+    const result = await computeLiveOutstandingReport(workspaceId, force);
     setReportCache(workspaceId, "outstanding_alltime", result.data);
-    return { source: "live", data: result.data, warnings: result.warnings, stale: false };
+    return { source: "live", data: result.data, warnings: result.warnings, stale: false, cachedAt: Date.now() };
   } catch (err) {
     console.error("[LiveReportingService] Outstanding failed:", err.message);
     return { source: "live", data: null, error: err.message, warnings: [`Outstanding data unavailable: ${err.message}`], stale: false };
@@ -2931,13 +2981,15 @@ app.get("/api/reporting/owner-performance", requireAuth(), async (req, res) => {
     const userId = typeof req.query.userId === "string" ? req.query.userId : void 0;
     const source = typeof req.query.source === "string" ? req.query.source : void 0;
     const campaign = typeof req.query.campaign === "string" ? req.query.campaign : void 0;
+    const force = req.query.force === "1";
+    if (force) invalidateWorkspaceCacheStore(req.workspace.id);
     const warnings = [];
     if (startDate && !isValidDateString(startDate)) return res.status(400).json({ status: "error", source: "mock", generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: "startDate must be YYYY-MM-DD." });
     if (endDate && !isValidDateString(endDate)) return res.status(400).json({ status: "error", source: "mock", generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: "endDate must be YYYY-MM-DD." });
-    const result = await LiveReportingService.getOwnerDashboardReport(req.workspace.id, { startDate, endDate, userId, source, campaign });
+    const result = await LiveReportingService.getOwnerDashboardReport(req.workspace.id, { startDate, endDate, userId, source, campaign, force });
     if (result.warnings) warnings.push(...result.warnings);
     if (!result.data) return res.status(503).json({ status: "error", source: result.source, generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: false, warnings, unavailableMetrics: ["all"], error: result.error || "Live data unavailable" });
-    return res.status(200).json({ status: "success", source: result.source, generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: !!result.stale, warnings, unavailableMetrics: result.unavailableMetrics || [], data: result.data });
+    return res.status(200).json({ status: "success", source: result.source, generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: !!result.stale, cachedAt: result.cachedAt || null, warnings, unavailableMetrics: result.unavailableMetrics || [], data: result.data });
   } catch (err) {
     return res.status(500).json({ status: "error", source: "mock", generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: err.message });
   }
@@ -2964,11 +3016,12 @@ app.get("/api/reporting/marketing-performance", requireAuth(), async (req, res) 
     const userId = typeof req.query.userId === "string" ? req.query.userId : void 0;
     const source = typeof req.query.source === "string" ? req.query.source : void 0;
     const campaign = typeof req.query.campaign === "string" ? req.query.campaign : void 0;
+    const force = req.query.force === "1";
     const warnings = [];
     if (startDate && !isValidDateString(startDate)) return res.status(400).json({ status: "error", source: "mock", generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: "startDate must be YYYY-MM-DD." });
     if (endDate && !isValidDateString(endDate)) return res.status(400).json({ status: "error", source: "mock", generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: "endDate must be YYYY-MM-DD." });
     if (source && source.toLowerCase().includes("tiktok")) warnings.push("TikTok ad accounts are not synced. Cost metrics are estimated.");
-    const result = await LiveReportingService.getMarketingDashboardReport(req.workspace.id, { startDate, endDate, userId, source, campaign });
+    const result = await LiveReportingService.getMarketingDashboardReport(req.workspace.id, { startDate, endDate, userId, source, campaign, force });
     if (result.warnings) warnings.push(...result.warnings);
     if (!result.data) return res.status(503).json({ status: "error", source: result.source, generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: false, warnings, unavailableMetrics: ["all"], error: result.error || "Live data unavailable" });
     return res.status(200).json({ status: "success", source: result.source, generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: !!result.stale, warnings, unavailableMetrics: result.unavailableMetrics || [], data: result.data });
@@ -2981,10 +3034,12 @@ app.get("/api/reporting/estimates-invoices", requireAuth(), async (req, res) => 
     await syncGhlToMockDb(req.workspace.id);
     const startDate = typeof req.query.startDate === "string" ? req.query.startDate : void 0;
     const endDate   = typeof req.query.endDate   === "string" ? req.query.endDate   : void 0;
+    const force = req.query.force === "1";
+    if (force) invalidateWorkspaceCacheStore(req.workspace.id);
     const warnings = [];
     if (startDate && !isValidDateString(startDate)) return res.status(400).json({ status: "error", source: "mock", generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: "startDate must be YYYY-MM-DD." });
     if (endDate   && !isValidDateString(endDate))   return res.status(400).json({ status: "error", source: "mock", generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: "endDate must be YYYY-MM-DD." });
-    const result = await LiveReportingService.getEstimatesInvoicesReport(req.workspace.id, { startDate, endDate });
+    const result = await LiveReportingService.getEstimatesInvoicesReport(req.workspace.id, { startDate, endDate, force });
     if (result.warnings) warnings.push(...result.warnings);
     if (!result.data) return res.status(503).json({ status: "error", source: result.source, generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: false, warnings, unavailableMetrics: ["all"], error: result.error || "Live data unavailable" });
     return res.status(200).json({ status: "success", source: result.source, generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: !!result.stale, warnings, unavailableMetrics: result.unavailableMetrics || [], data: result.data });
@@ -3012,7 +3067,9 @@ app.get("/api/reporting/outstanding", requireAuth(), async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
   try {
     await syncGhlToMockDb(req.workspace.id);
-    const result = await LiveReportingService.getOutstandingReport(req.workspace.id);
+    const force = req.query.force === "1";
+    if (force) invalidateWorkspaceCacheStore(req.workspace.id);
+    const result = await LiveReportingService.getOutstandingReport(req.workspace.id, force);
     if (!result.data) return res.status(503).json({ status: "error", source: result.source, generatedAt: new Date().toISOString(), stale: false, warnings: result.warnings || [], error: result.error || "Live data unavailable" });
     return res.status(200).json({ status: "success", source: result.source, generatedAt: new Date().toISOString(), stale: !!result.stale, warnings: result.warnings || [], data: result.data });
   } catch (err) { return res.status(500).json({ status: "error", source: "mock", generatedAt: new Date().toISOString(), stale: false, warnings: [], error: err.message }); }
@@ -3023,10 +3080,11 @@ app.get("/api/reporting/appointment-performance", requireAuth(), async (req, res
     const startDate = typeof req.query.startDate === "string" ? req.query.startDate : void 0;
     const endDate = typeof req.query.endDate === "string" ? req.query.endDate : void 0;
     const userId = typeof req.query.userId === "string" ? req.query.userId : void 0;
+    const force = req.query.force === "1";
     const warnings = [];
     if (startDate && !isValidDateString(startDate)) return res.status(400).json({ status: "error", source: "mock", generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: "startDate must be YYYY-MM-DD." });
     if (endDate && !isValidDateString(endDate)) return res.status(400).json({ status: "error", source: "mock", generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: "endDate must be YYYY-MM-DD." });
-    const result = await LiveReportingService.getAppointmentDashboardReport(req.workspace.id, { startDate, endDate, userId });
+    const result = await LiveReportingService.getAppointmentDashboardReport(req.workspace.id, { startDate, endDate, userId, force });
     if (result.warnings) warnings.push(...result.warnings);
     if (!result.data) return res.status(503).json({ status: "error", source: result.source, generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: false, warnings, unavailableMetrics: ["all"], error: result.error || "Live data unavailable" });
     return res.status(200).json({ status: "success", source: result.source, generatedAt: (/* @__PURE__ */ new Date()).toISOString(), stale: !!result.stale, warnings, unavailableMetrics: result.unavailableMetrics || [], data: result.data });
@@ -3320,6 +3378,170 @@ app.post('/api/integrations/google/property', requireAuth(), async (req, res) =>
     .eq('workspace_id', req.workspace.id).eq('provider', 'google_analytics');
   try { await logAction(req.workspace.id, req.user.id, req.user.email, 'SET_GA4_PROPERTY', `GA4 property set: ${propertyId}`); } catch {}
   return res.json({ status: 'success', message: 'GA4 property saved.' });
+});
+
+// ---- META ADS ----
+
+async function getMetaToken(workspaceId) {
+  const { data: row } = await supabaseAdmin
+    .from('workspace_integrations')
+    .select('encrypted_access_token, property_id')
+    .eq('workspace_id', workspaceId)
+    .eq('provider', 'meta_ads')
+    .single();
+  if (!row?.encrypted_access_token || !row?.property_id) return null;
+  try { return { token: decryptToken(row.encrypted_access_token), adAccountId: row.property_id }; }
+  catch { return null; }
+}
+
+async function fetchMetaInsights(token, adAccountId, startDate, endDate) {
+  const GV = 'v22.0';
+  const base = `https://graph.facebook.com/${GV}/act_${adAccountId}/insights`;
+  const fields = 'spend,impressions,reach,clicks,ctr,cpc,cpm,actions,cost_per_action_type,purchase_roas';
+  const timeRange = JSON.stringify({ since: startDate, until: endDate });
+  const acctRes = await fetch(`${base}?fields=${fields}&time_range=${encodeURIComponent(timeRange)}&level=account&limit=1&access_token=${encodeURIComponent(token)}`);
+  if (!acctRes.ok) {
+    const errBody = await acctRes.text();
+    throw new Error(`Meta API ${acctRes.status}: ${errBody.slice(0, 200)}`);
+  }
+  const acctData = await acctRes.json();
+  const accountLevel = (acctData.data || [])[0] || null;
+  const campaignFields = `campaign_id,campaign_name,${fields}`;
+  let campaigns = [];
+  let url = `${base}?fields=${encodeURIComponent(campaignFields)}&time_range=${encodeURIComponent(timeRange)}&level=campaign&limit=500&access_token=${encodeURIComponent(token)}`;
+  let pageCount = 0;
+  while (url && pageCount < 10) {
+    const r = await fetch(url);
+    if (!r.ok) break;
+    const d = await r.json();
+    campaigns = campaigns.concat(d.data || []);
+    url = d.paging?.next || null;
+    pageCount++;
+  }
+  return { accountLevel, campaigns };
+}
+
+function parseMetaActions(actions, costPerAction) {
+  const PURCHASE_TYPES = ['purchase', 'omni_purchase', 'offsite_conversion.fb_pixel_purchase'];
+  const cv = (actions || []).find(a => PURCHASE_TYPES.includes(a.action_type));
+  const cp = (costPerAction || []).find(a => PURCHASE_TYPES.includes(a.action_type));
+  return {
+    conversions: cv ? parseFloat(cv.value || '0') : 0,
+    costPerResult: cp ? parseFloat(cp.value || '0') : 0,
+  };
+}
+
+function normalizeMetaReport(accountLevel, campaigns, source, adAccountId, adAccountName) {
+  const a = accountLevel || {};
+  const { conversions, costPerResult } = parseMetaActions(a.actions || [], a.cost_per_action_type || []);
+  const roasEntry = (a.purchase_roas || []).find(r => r.action_type === 'omni_purchase') || (a.purchase_roas || [])[0];
+  const normalizedCampaigns = campaigns.map(c => {
+    const { conversions: cv, costPerResult: cpr } = parseMetaActions(c.actions || [], c.cost_per_action_type || []);
+    const cRoas = (c.purchase_roas || []).find(r => r.action_type === 'omni_purchase') || (c.purchase_roas || [])[0];
+    return {
+      id: c.campaign_id || '', name: c.campaign_name || 'Unknown',
+      spend: parseFloat(c.spend || '0'), impressions: parseInt(c.impressions || '0'),
+      reach: parseInt(c.reach || '0'), clicks: parseInt(c.clicks || '0'),
+      ctr: parseFloat(c.ctr || '0'), cpc: parseFloat(c.cpc || '0'), cpm: parseFloat(c.cpm || '0'),
+      conversions: cv, costPerResult: cpr,
+      roas: cRoas ? parseFloat(cRoas.value || '0') : 0,
+    };
+  }).sort((x, y) => y.spend - x.spend);
+  return {
+    spend: parseFloat(a.spend || '0'), impressions: parseInt(a.impressions || '0'),
+    reach: parseInt(a.reach || '0'), clicks: parseInt(a.clicks || '0'),
+    ctr: parseFloat(a.ctr || '0'), cpc: parseFloat(a.cpc || '0'), cpm: parseFloat(a.cpm || '0'),
+    conversions, costPerResult, roas: roasEntry ? parseFloat(roasEntry.value || '0') : 0,
+    campaigns: normalizedCampaigns, source, warnings: [], adAccountId, adAccountName,
+  };
+}
+
+function getMockMetaReport() {
+  return {
+    spend: 4250, impressions: 182500, reach: 94300, clicks: 3640,
+    ctr: 1.99, cpc: 1.17, cpm: 23.29, conversions: 48, costPerResult: 88.54, roas: 3.82,
+    campaigns: [
+      { id: '1', name: 'Pool Install – Spring Leads', spend: 1800, impressions: 74000, reach: 38200, clicks: 1520, ctr: 2.05, cpc: 1.18, cpm: 24.32, conversions: 22, costPerResult: 81.82, roas: 4.10 },
+      { id: '2', name: 'Pool Repair Retargeting', spend: 950, impressions: 42000, reach: 28500, clicks: 880, ctr: 2.10, cpc: 1.08, cpm: 22.62, conversions: 14, costPerResult: 67.86, roas: 4.55 },
+      { id: '3', name: 'Brand Awareness – Summer', spend: 750, impressions: 48000, reach: 19400, clicks: 620, ctr: 1.29, cpc: 1.21, cpm: 15.63, conversions: 7, costPerResult: 107.14, roas: 2.80 },
+      { id: '4', name: 'Service Promo – June', spend: 750, impressions: 18500, reach: 8200, clicks: 620, ctr: 3.35, cpc: 1.21, cpm: 40.54, conversions: 5, costPerResult: 150.00, roas: 2.50 },
+    ],
+    source: 'mock',
+    warnings: ['Meta Ads is not connected. Showing sample data.'],
+    adAccountName: 'Showtime Pool Mechanics', adAccountId: '',
+  };
+}
+
+app.post('/api/integrations/meta/connect', requireAuth(), async (req, res) => {
+  const { accessToken: rawToken, adAccountId } = req.body;
+  if (!rawToken || !adAccountId) return res.status(400).json({ status: 'error', error: 'accessToken and adAccountId are required.' });
+  const cleanId = adAccountId.replace(/^act_/, '').trim();
+  if (!cleanId || !/^\d+$/.test(cleanId)) return res.status(400).json({ status: 'error', error: 'adAccountId must be numeric (e.g. 123456789 or act_123456789).' });
+  try {
+    const meRes = await fetch(`https://graph.facebook.com/v22.0/me?access_token=${encodeURIComponent(rawToken)}`);
+    if (!meRes.ok) {
+      const errBody = await meRes.json();
+      return res.status(400).json({ status: 'error', error: errBody?.error?.message || 'Invalid Meta access token.' });
+    }
+    let adAccountName = `act_${cleanId}`;
+    const acctRes = await fetch(`https://graph.facebook.com/v22.0/act_${cleanId}?fields=name&access_token=${encodeURIComponent(rawToken)}`);
+    if (acctRes.ok) { const d = await acctRes.json(); if (d.name) adAccountName = d.name; }
+    const now = new Date().toISOString();
+    await supabaseAdmin.from('workspace_integrations').upsert({
+      id: `int_meta_${req.workspace.id}`,
+      workspace_id: req.workspace.id, provider: 'meta_ads', status: 'CONNECTED',
+      encrypted_access_token: encryptToken(rawToken), encrypted_refresh_token: null,
+      token_expiry: null, property_id: cleanId, property_name: adAccountName,
+      connected_at: now, last_synced_at: now,
+    }, { onConflict: 'workspace_id,provider' });
+    try { await logAction(req.workspace.id, req.user.id, req.user.email, 'CONNECT_META_ADS', `Meta Ads connected: act_${cleanId}`); } catch {}
+    return res.json({ status: 'success', message: 'Meta Ads connected.', adAccountName });
+  } catch (err) { return res.status(500).json({ status: 'error', error: err.message }); }
+});
+
+app.delete('/api/integrations/meta', requireAuth(), async (req, res) => {
+  await supabaseAdmin.from('workspace_integrations').delete()
+    .eq('workspace_id', req.workspace.id).eq('provider', 'meta_ads');
+  try { await logAction(req.workspace.id, req.user.id, req.user.email, 'DISCONNECT_META_ADS', 'Meta Ads disconnected.'); } catch {}
+  return res.json({ status: 'success', message: 'Meta Ads disconnected.' });
+});
+
+app.get('/api/reporting/meta-ads', requireAuth(), async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  const startDate = typeof req.query.startDate === 'string' ? req.query.startDate : void 0;
+  const endDate = typeof req.query.endDate === 'string' ? req.query.endDate : void 0;
+  const force = req.query.force === '1';
+  const { data: integration } = await supabaseAdmin
+    .from('workspace_integrations').select('status, property_id, property_name')
+    .eq('workspace_id', req.workspace.id).eq('provider', 'meta_ads').single();
+  if (!integration || integration.status !== 'CONNECTED') {
+    return res.json({ status: 'success', connected: false, data: getMockMetaReport() });
+  }
+  const sd = startDate || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  const ed = endDate || new Date().toISOString().slice(0, 10);
+  const cacheKey = `meta_ads_${req.workspace.id}_${sd}_${ed}`;
+  const META_TTL = 5 * 60 * 1e3;
+  if (!force) {
+    const cached = serverCacheMemory[cacheKey];
+    if (cached && (Date.now() - cached.timestamp) < META_TTL) {
+      return res.json({ status: 'success', connected: true, data: cached.data });
+    }
+  }
+  const creds = await getMetaToken(req.workspace.id);
+  if (!creds) {
+    return res.json({ status: 'success', connected: true, data: { ...getMockMetaReport(), source: 'mock', warnings: ['Token unavailable — reconnect Meta Ads.'] } });
+  }
+  try {
+    const { accountLevel, campaigns } = await fetchMetaInsights(creds.token, creds.adAccountId, sd, ed);
+    const data = normalizeMetaReport(accountLevel, campaigns, 'live', integration.property_id || '', integration.property_name || '');
+    serverCacheMemory[cacheKey] = { data, timestamp: Date.now() };
+    await supabaseAdmin.from('workspace_integrations').update({ last_synced_at: new Date().toISOString() })
+      .eq('workspace_id', req.workspace.id).eq('provider', 'meta_ads');
+    return res.json({ status: 'success', connected: true, data });
+  } catch (err) {
+    console.error('[Meta Ads]', err.message);
+    return res.json({ status: 'success', connected: true, data: { ...getMockMetaReport(), source: 'mock', warnings: [`Meta API error: ${err.message.slice(0, 120)} — showing sample data.`] } });
+  }
 });
 
 // ---- DEBUG: raw GHL estimates/invoices probe (SUPER_ADMIN / WORKSPACE_OWNER only) ----

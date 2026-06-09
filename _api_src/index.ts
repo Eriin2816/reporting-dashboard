@@ -1231,10 +1231,12 @@ app.get('/api/reporting/owner-performance', requireAuth(), async (req: any, res)
     const warnings: string[] = [];
     if (startDate && !isValidDateString(startDate)) return res.status(400).json({ status: 'error', source: 'mock', generatedAt: new Date().toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: 'startDate must be YYYY-MM-DD.' });
     if (endDate && !isValidDateString(endDate)) return res.status(400).json({ status: 'error', source: 'mock', generatedAt: new Date().toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: 'endDate must be YYYY-MM-DD.' });
-    const result = await LiveReportingService.getOwnerDashboardReport(req.workspace.id, { startDate, endDate, userId, source, campaign });
+    const force = req.query.force === '1';
+    if (force) { const { invalidateWorkspaceCacheStore } = await import('../src/ghlService.js'); invalidateWorkspaceCacheStore(req.workspace.id); }
+    const result = await LiveReportingService.getOwnerDashboardReport(req.workspace.id, { startDate, endDate, userId, source, campaign, force });
     if (result.warnings) warnings.push(...result.warnings);
     if (!result.data) return res.status(503).json({ status: 'error', source: result.source, generatedAt: new Date().toISOString(), stale: false, warnings, unavailableMetrics: ['all'], error: (result as any).error || 'Live data unavailable' });
-    return res.status(200).json({ status: 'success', source: result.source, generatedAt: new Date().toISOString(), stale: !!result.stale, warnings, unavailableMetrics: result.unavailableMetrics || [], data: result.data });
+    return res.status(200).json({ status: 'success', source: result.source, generatedAt: new Date().toISOString(), stale: !!result.stale, cachedAt: (result as any).cachedAt || null, warnings, unavailableMetrics: result.unavailableMetrics || [], data: result.data });
   } catch (err: any) { return res.status(500).json({ status: 'error', source: 'mock', generatedAt: new Date().toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: err.message }); }
 });
 
@@ -1263,10 +1265,12 @@ app.get('/api/reporting/marketing-performance', requireAuth(), async (req: any, 
     if (startDate && !isValidDateString(startDate)) return res.status(400).json({ status: 'error', source: 'mock', generatedAt: new Date().toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: 'startDate must be YYYY-MM-DD.' });
     if (endDate && !isValidDateString(endDate)) return res.status(400).json({ status: 'error', source: 'mock', generatedAt: new Date().toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: 'endDate must be YYYY-MM-DD.' });
     if (source && source.toLowerCase().includes('tiktok')) warnings.push('TikTok ad accounts are not synced. Cost metrics are estimated.');
-    const result = await LiveReportingService.getMarketingDashboardReport(req.workspace.id, { startDate, endDate, userId, source, campaign });
+    const force = req.query.force === '1';
+    if (force) { const { invalidateWorkspaceCacheStore } = await import('../src/ghlService.js'); invalidateWorkspaceCacheStore(req.workspace.id); }
+    const result = await LiveReportingService.getMarketingDashboardReport(req.workspace.id, { startDate, endDate, userId, source, campaign, force });
     if (result.warnings) warnings.push(...result.warnings);
     if (!result.data) return res.status(503).json({ status: 'error', source: result.source, generatedAt: new Date().toISOString(), stale: false, warnings, unavailableMetrics: ['all'], error: (result as any).error || 'Live data unavailable' });
-    return res.status(200).json({ status: 'success', source: result.source, generatedAt: new Date().toISOString(), stale: !!result.stale, warnings, unavailableMetrics: result.unavailableMetrics || [], data: result.data });
+    return res.status(200).json({ status: 'success', source: result.source, generatedAt: new Date().toISOString(), stale: !!result.stale, cachedAt: (result as any).cachedAt || null, warnings, unavailableMetrics: result.unavailableMetrics || [], data: result.data });
   } catch (err: any) { return res.status(500).json({ status: 'error', source: 'mock', generatedAt: new Date().toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: err.message }); }
 });
 
@@ -1278,10 +1282,12 @@ app.get('/api/reporting/estimates-invoices', requireAuth(), async (req: any, res
     const warnings: string[] = [];
     if (startDate && !isValidDateString(startDate)) return res.status(400).json({ status: 'error', source: 'mock', generatedAt: new Date().toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: 'startDate must be YYYY-MM-DD.' });
     if (endDate   && !isValidDateString(endDate))   return res.status(400).json({ status: 'error', source: 'mock', generatedAt: new Date().toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: 'endDate must be YYYY-MM-DD.' });
-    const result = await LiveReportingService.getEstimatesInvoicesReport(req.workspace.id, { startDate, endDate });
+    const force = req.query.force === '1';
+    if (force) { const { invalidateWorkspaceCacheStore } = await import('../src/ghlService.js'); invalidateWorkspaceCacheStore(req.workspace.id); }
+    const result = await LiveReportingService.getEstimatesInvoicesReport(req.workspace.id, { startDate, endDate, force });
     if (result.warnings) warnings.push(...result.warnings);
     if (!result.data) return res.status(503).json({ status: 'error', source: result.source, generatedAt: new Date().toISOString(), stale: false, warnings, unavailableMetrics: ['all'], error: (result as any).error || 'Live data unavailable' });
-    return res.status(200).json({ status: 'success', source: result.source, generatedAt: new Date().toISOString(), stale: !!result.stale, warnings, unavailableMetrics: result.unavailableMetrics || [], data: result.data });
+    return res.status(200).json({ status: 'success', source: result.source, generatedAt: new Date().toISOString(), stale: !!result.stale, cachedAt: (result as any).cachedAt || null, warnings, unavailableMetrics: result.unavailableMetrics || [], data: result.data });
   } catch (err: any) { return res.status(500).json({ status: 'error', source: 'mock', generatedAt: new Date().toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: err.message }); }
 });
 
@@ -1307,9 +1313,11 @@ app.get('/api/reporting/outstanding', requireAuth(), async (req: any, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
   try {
     await syncGhlToMockDb(req.workspace.id);
-    const result = await LiveReportingService.getOutstandingReport(req.workspace.id);
+    const force = req.query.force === '1';
+    if (force) { const { invalidateWorkspaceCacheStore } = await import('../src/ghlService.js'); invalidateWorkspaceCacheStore(req.workspace.id); }
+    const result = await LiveReportingService.getOutstandingReport(req.workspace.id, force);
     if (!result.data) return res.status(503).json({ status: 'error', source: result.source, generatedAt: new Date().toISOString(), stale: false, warnings: result.warnings || [], error: (result as any).error || 'Live data unavailable' });
-    return res.status(200).json({ status: 'success', source: result.source, generatedAt: new Date().toISOString(), stale: !!result.stale, warnings: result.warnings || [], data: result.data });
+    return res.status(200).json({ status: 'success', source: result.source, generatedAt: new Date().toISOString(), stale: !!result.stale, cachedAt: (result as any).cachedAt || null, warnings: result.warnings || [], data: result.data });
   } catch (err: any) { return res.status(500).json({ status: 'error', source: 'mock', generatedAt: new Date().toISOString(), stale: false, warnings: [], error: err.message }); }
 });
 
@@ -1322,10 +1330,12 @@ app.get('/api/reporting/appointment-performance', requireAuth(), async (req: any
     const warnings: string[] = [];
     if (startDate && !isValidDateString(startDate)) return res.status(400).json({ status: 'error', source: 'mock', generatedAt: new Date().toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: 'startDate must be YYYY-MM-DD.' });
     if (endDate && !isValidDateString(endDate)) return res.status(400).json({ status: 'error', source: 'mock', generatedAt: new Date().toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: 'endDate must be YYYY-MM-DD.' });
-    const result = await LiveReportingService.getAppointmentDashboardReport(req.workspace.id, { startDate, endDate, userId });
+    const force = req.query.force === '1';
+    if (force) { const { invalidateWorkspaceCacheStore } = await import('../src/ghlService.js'); invalidateWorkspaceCacheStore(req.workspace.id); }
+    const result = await LiveReportingService.getAppointmentDashboardReport(req.workspace.id, { startDate, endDate, userId, force });
     if (result.warnings) warnings.push(...result.warnings);
     if (!result.data) return res.status(503).json({ status: 'error', source: result.source, generatedAt: new Date().toISOString(), stale: false, warnings, unavailableMetrics: ['all'], error: (result as any).error || 'Live data unavailable' });
-    return res.status(200).json({ status: 'success', source: result.source, generatedAt: new Date().toISOString(), stale: !!result.stale, warnings, unavailableMetrics: result.unavailableMetrics || [], data: result.data });
+    return res.status(200).json({ status: 'success', source: result.source, generatedAt: new Date().toISOString(), stale: !!result.stale, cachedAt: (result as any).cachedAt || null, warnings, unavailableMetrics: result.unavailableMetrics || [], data: result.data });
   } catch (err: any) { return res.status(500).json({ status: 'error', source: 'mock', generatedAt: new Date().toISOString(), stale: false, warnings: [], unavailableMetrics: [], error: err.message }); }
 });
 
@@ -1465,6 +1475,172 @@ app.post('/api/integrations/google/property', requireAuth(), async (req: any, re
     .eq('workspace_id', req.workspace.id).eq('provider', 'google_analytics');
   try { await logAction(req.workspace.id, req.user.id, req.user.email, 'SET_GA4_PROPERTY', `GA4 property set: ${propertyId}`); } catch {}
   return res.json({ status: 'success', message: 'GA4 property saved.' });
+});
+
+// ---- META ADS ----
+
+async function getMetaToken(workspaceId: string): Promise<{ token: string; adAccountId: string } | null> {
+  const { data: row } = await supabaseAdmin
+    .from('workspace_integrations')
+    .select('encrypted_access_token, property_id')
+    .eq('workspace_id', workspaceId)
+    .eq('provider', 'meta_ads')
+    .single();
+  if (!row?.encrypted_access_token || !row?.property_id) return null;
+  try { return { token: decryptToken(row.encrypted_access_token), adAccountId: row.property_id }; }
+  catch { return null; }
+}
+
+async function fetchMetaInsights(token: string, adAccountId: string, startDate: string, endDate: string): Promise<{ accountLevel: any; campaigns: any[] }> {
+  const GV = 'v22.0';
+  const base = `https://graph.facebook.com/${GV}/act_${adAccountId}/insights`;
+  const fields = 'spend,impressions,reach,clicks,ctr,cpc,cpm,actions,cost_per_action_type,purchase_roas';
+  const timeRange = JSON.stringify({ since: startDate, until: endDate });
+
+  const acctRes = await fetch(`${base}?fields=${fields}&time_range=${encodeURIComponent(timeRange)}&level=account&limit=1&access_token=${encodeURIComponent(token)}`);
+  if (!acctRes.ok) {
+    const errBody = await acctRes.text();
+    throw new Error(`Meta API ${acctRes.status}: ${errBody.slice(0, 200)}`);
+  }
+  const acctData = await acctRes.json() as any;
+  const accountLevel = (acctData.data || [])[0] || null;
+
+  const campaignFields = `campaign_id,campaign_name,${fields}`;
+  let campaigns: any[] = [];
+  let url: string | null = `${base}?fields=${encodeURIComponent(campaignFields)}&time_range=${encodeURIComponent(timeRange)}&level=campaign&limit=500&access_token=${encodeURIComponent(token)}`;
+  let pageCount = 0;
+  while (url && pageCount < 10) {
+    const r = await fetch(url);
+    if (!r.ok) break;
+    const d = await r.json() as any;
+    campaigns = campaigns.concat(d.data || []);
+    url = d.paging?.next || null;
+    pageCount++;
+  }
+  return { accountLevel, campaigns };
+}
+
+function parseMetaActions(actions: any[], costPerAction: any[]): { conversions: number; costPerResult: number } {
+  const PURCHASE_TYPES = ['purchase', 'omni_purchase', 'offsite_conversion.fb_pixel_purchase'];
+  const cv = (actions || []).find((a: any) => PURCHASE_TYPES.includes(a.action_type));
+  const cp = (costPerAction || []).find((a: any) => PURCHASE_TYPES.includes(a.action_type));
+  return {
+    conversions: cv ? parseFloat(cv.value || '0') : 0,
+    costPerResult: cp ? parseFloat(cp.value || '0') : 0,
+  };
+}
+
+function normalizeMetaReport(accountLevel: any, campaigns: any[], source: 'live' | 'mock', adAccountId: string, adAccountName: string): any {
+  const a = accountLevel || {};
+  const { conversions, costPerResult } = parseMetaActions(a.actions || [], a.cost_per_action_type || []);
+  const roasEntry = (a.purchase_roas || []).find((r: any) => r.action_type === 'omni_purchase') || (a.purchase_roas || [])[0];
+  const normalizedCampaigns = campaigns.map((c: any) => {
+    const { conversions: cv, costPerResult: cpr } = parseMetaActions(c.actions || [], c.cost_per_action_type || []);
+    const cRoas = (c.purchase_roas || []).find((r: any) => r.action_type === 'omni_purchase') || (c.purchase_roas || [])[0];
+    return {
+      id: c.campaign_id || '', name: c.campaign_name || 'Unknown',
+      spend: parseFloat(c.spend || '0'), impressions: parseInt(c.impressions || '0'),
+      reach: parseInt(c.reach || '0'), clicks: parseInt(c.clicks || '0'),
+      ctr: parseFloat(c.ctr || '0'), cpc: parseFloat(c.cpc || '0'), cpm: parseFloat(c.cpm || '0'),
+      conversions: cv, costPerResult: cpr,
+      roas: cRoas ? parseFloat(cRoas.value || '0') : 0,
+    };
+  }).sort((x: any, y: any) => y.spend - x.spend);
+  return {
+    spend: parseFloat(a.spend || '0'), impressions: parseInt(a.impressions || '0'),
+    reach: parseInt(a.reach || '0'), clicks: parseInt(a.clicks || '0'),
+    ctr: parseFloat(a.ctr || '0'), cpc: parseFloat(a.cpc || '0'), cpm: parseFloat(a.cpm || '0'),
+    conversions, costPerResult, roas: roasEntry ? parseFloat(roasEntry.value || '0') : 0,
+    campaigns: normalizedCampaigns, source, warnings: [], adAccountId, adAccountName,
+  };
+}
+
+function getMockMetaReport() {
+  return {
+    spend: 4250, impressions: 182500, reach: 94300, clicks: 3640,
+    ctr: 1.99, cpc: 1.17, cpm: 23.29, conversions: 48, costPerResult: 88.54, roas: 3.82,
+    campaigns: [
+      { id: '1', name: 'Pool Install – Spring Leads', spend: 1800, impressions: 74000, reach: 38200, clicks: 1520, ctr: 2.05, cpc: 1.18, cpm: 24.32, conversions: 22, costPerResult: 81.82, roas: 4.10 },
+      { id: '2', name: 'Pool Repair Retargeting', spend: 950, impressions: 42000, reach: 28500, clicks: 880, ctr: 2.10, cpc: 1.08, cpm: 22.62, conversions: 14, costPerResult: 67.86, roas: 4.55 },
+      { id: '3', name: 'Brand Awareness – Summer', spend: 750, impressions: 48000, reach: 19400, clicks: 620, ctr: 1.29, cpc: 1.21, cpm: 15.63, conversions: 7, costPerResult: 107.14, roas: 2.80 },
+      { id: '4', name: 'Service Promo – June', spend: 750, impressions: 18500, reach: 8200, clicks: 620, ctr: 3.35, cpc: 1.21, cpm: 40.54, conversions: 5, costPerResult: 150.00, roas: 2.50 },
+    ],
+    source: 'mock' as const,
+    warnings: ['Meta Ads is not connected. Showing sample data.'],
+    adAccountName: 'Showtime Pool Mechanics', adAccountId: '',
+  };
+}
+
+app.post('/api/integrations/meta/connect', requireAuth(), async (req: any, res) => {
+  const { accessToken: rawToken, adAccountId } = req.body;
+  if (!rawToken || !adAccountId) return res.status(400).json({ status: 'error', error: 'accessToken and adAccountId are required.' });
+  const cleanId = adAccountId.replace(/^act_/, '').trim();
+  if (!cleanId || !/^\d+$/.test(cleanId)) return res.status(400).json({ status: 'error', error: 'adAccountId must be numeric (e.g. 123456789 or act_123456789).' });
+  try {
+    const meRes = await fetch(`https://graph.facebook.com/v22.0/me?access_token=${encodeURIComponent(rawToken)}`);
+    if (!meRes.ok) {
+      const errBody = await meRes.json() as any;
+      return res.status(400).json({ status: 'error', error: errBody?.error?.message || 'Invalid Meta access token.' });
+    }
+    let adAccountName = `act_${cleanId}`;
+    const acctRes = await fetch(`https://graph.facebook.com/v22.0/act_${cleanId}?fields=name&access_token=${encodeURIComponent(rawToken)}`);
+    if (acctRes.ok) { const d = await acctRes.json() as any; if (d.name) adAccountName = d.name; }
+    const now = new Date().toISOString();
+    await supabaseAdmin.from('workspace_integrations').upsert({
+      id: `int_meta_${req.workspace.id}`,
+      workspace_id: req.workspace.id, provider: 'meta_ads', status: 'CONNECTED',
+      encrypted_access_token: encryptToken(rawToken), encrypted_refresh_token: null,
+      token_expiry: null, property_id: cleanId, property_name: adAccountName,
+      connected_at: now, last_synced_at: now,
+    }, { onConflict: 'workspace_id,provider' });
+    try { await logAction(req.workspace.id, req.user.id, req.user.email, 'CONNECT_META_ADS', `Meta Ads connected: act_${cleanId}`); } catch {}
+    return res.json({ status: 'success', message: 'Meta Ads connected.', adAccountName });
+  } catch (err: any) { return res.status(500).json({ status: 'error', error: err.message }); }
+});
+
+app.delete('/api/integrations/meta', requireAuth(), async (req: any, res) => {
+  await supabaseAdmin.from('workspace_integrations').delete()
+    .eq('workspace_id', req.workspace.id).eq('provider', 'meta_ads');
+  try { await logAction(req.workspace.id, req.user.id, req.user.email, 'DISCONNECT_META_ADS', 'Meta Ads disconnected.'); } catch {}
+  return res.json({ status: 'success', message: 'Meta Ads disconnected.' });
+});
+
+app.get('/api/reporting/meta-ads', requireAuth(), async (req: any, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  const startDate = typeof req.query.startDate === 'string' ? req.query.startDate : undefined;
+  const endDate = typeof req.query.endDate === 'string' ? req.query.endDate : undefined;
+  const force = req.query.force === '1';
+  const { data: integration } = await supabaseAdmin
+    .from('workspace_integrations').select('status, property_id, property_name')
+    .eq('workspace_id', req.workspace.id).eq('provider', 'meta_ads').single();
+  if (!integration || integration.status !== 'CONNECTED') {
+    return res.json({ status: 'success', connected: false, data: getMockMetaReport() });
+  }
+  const sd = startDate || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  const ed = endDate || new Date().toISOString().slice(0, 10);
+  const cacheKey = `meta_ads_${req.workspace.id}_${sd}_${ed}`;
+  const META_TTL = 5 * 60 * 1000;
+  if (!force) {
+    const cached = (serverCacheMemory as any)[cacheKey];
+    if (cached && (Date.now() - cached.timestamp) < META_TTL) {
+      return res.json({ status: 'success', connected: true, data: cached.data });
+    }
+  }
+  const creds = await getMetaToken(req.workspace.id);
+  if (!creds) {
+    return res.json({ status: 'success', connected: true, data: { ...getMockMetaReport(), source: 'mock', warnings: ['Token unavailable — reconnect Meta Ads.'] } });
+  }
+  try {
+    const { accountLevel, campaigns } = await fetchMetaInsights(creds.token, creds.adAccountId, sd, ed);
+    const data = normalizeMetaReport(accountLevel, campaigns, 'live', integration.property_id || '', integration.property_name || '');
+    (serverCacheMemory as any)[cacheKey] = { data, timestamp: Date.now() };
+    await supabaseAdmin.from('workspace_integrations').update({ last_synced_at: new Date().toISOString() })
+      .eq('workspace_id', req.workspace.id).eq('provider', 'meta_ads');
+    return res.json({ status: 'success', connected: true, data });
+  } catch (err: any) {
+    console.error('[Meta Ads]', err.message);
+    return res.json({ status: 'success', connected: true, data: { ...getMockMetaReport(), source: 'mock', warnings: [`Meta API error: ${err.message.slice(0, 120)} — showing sample data.`] } });
+  }
 });
 
 // ---- DEBUG: raw GHL estimates/invoices probe (SUPER_ADMIN only, no data returned to client) ----

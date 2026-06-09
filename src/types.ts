@@ -197,6 +197,7 @@ export interface ApiResponse<T> {
   source: 'mock' | 'live';
   generatedAt: string;
   stale: boolean;
+  cachedAt?: number | null;
   warnings: string[];
   unavailableMetrics: string[];
   error?: string;
@@ -486,6 +487,37 @@ export interface SubscriptionPlaceholder {
 }
 
 // ==========================================
+// OUTSTANDING REPORT TYPES
+// ==========================================
+
+export interface OutstandingRecord {
+  id: string;
+  number: string;
+  name: string;
+  contactName: string;
+  contactEmail: string;
+  status: string;        // raw GHL status, not normalized
+  sentDate: string;      // ISO — sentAt → issueDate → updatedAt → createdAt fallback
+  amount: number;        // total (estimates) or amountDue (invoices)
+  daysOutstanding: number;
+}
+
+export interface OutstandingReport {
+  pendingEstimates: {
+    count: number;
+    totalValue: number;
+    records: OutstandingRecord[];
+  };
+  unpaidInvoices: {
+    count: number;
+    totalValue: number;
+    records: OutstandingRecord[];
+  };
+  fetchedAt: string;
+  warnings: string[];
+}
+
+// ==========================================
 // EXTERNAL ANALYTICS INTEGRATION TYPES
 // ==========================================
 
@@ -519,6 +551,39 @@ export interface GA4Report {
   topLandingPages: GA4LandingPageRow[];
   source: 'live' | 'mock';
   warnings: string[];
+}
+
+export interface MetaCampaignRow {
+  id: string;
+  name: string;
+  spend: number;
+  impressions: number;
+  reach: number;
+  clicks: number;
+  ctr: number;
+  cpc: number;
+  cpm: number;
+  conversions: number;
+  costPerResult: number;
+  roas: number;
+}
+
+export interface MetaAdsReport {
+  spend: number;
+  impressions: number;
+  reach: number;
+  clicks: number;
+  ctr: number;
+  cpc: number;
+  cpm: number;
+  conversions: number;
+  costPerResult: number;
+  roas: number;
+  campaigns: MetaCampaignRow[];
+  source: 'live' | 'mock';
+  warnings: string[];
+  adAccountId: string;
+  adAccountName: string;
 }
 
 export interface AuditLog {
