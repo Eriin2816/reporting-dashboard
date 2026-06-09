@@ -23,7 +23,7 @@ import OpportunityDashboardView from './OpportunityDashboardView';
 import SalesDashboardView from './SalesDashboardView';
 import AppointmentDashboardView from './AppointmentDashboardView';
 import MarketingDashboardView from './MarketingDashboardView';
-import EstimatesInvoicesDashboardView from './EstimatesInvoicesDashboardView';
+import { EstimatesInvoicesDashboardViewWithBoundary as EstimatesInvoicesDashboardView } from './EstimatesInvoicesDashboardView';
 
 import { OwnerPerformanceReport, MarketingPerformanceReport, AppointmentDashboardReport, EstimatesInvoicesReport, OutstandingReport, IntegrationStatus, GA4Report, MetaAdsReport, ApiResponse } from '../types';
 

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, Component, ErrorInfo } from 'react';
 import {
   FileText,
   Receipt,
@@ -162,7 +162,7 @@ function OutstandingTable({ records, emptyLabel }: { records: OutstandingRecord[
 
   const q = search.trim().toLowerCase();
   const filtered = q
-    ? records.filter(r => r.contactName.toLowerCase().includes(q) || (r.number || '').toLowerCase().includes(q))
+    ? records.filter(r => (r.contactName || '').toLowerCase().includes(q) || String(r.number || '').toLowerCase().includes(q))
     : records;
 
   const sorted = [...filtered].sort((a, b) => {
@@ -250,7 +250,7 @@ function PaidInvoicesTable({ records, emptyLabel }: { records: OutstandingRecord
 
   const q = search.trim().toLowerCase();
   const filtered = q
-    ? records.filter(r => r.contactName.toLowerCase().includes(q) || (r.number || '').toLowerCase().includes(q))
+    ? records.filter(r => (r.contactName || '').toLowerCase().includes(q) || String(r.number || '').toLowerCase().includes(q))
     : records;
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
@@ -311,7 +311,7 @@ function EstimatesSentTable({ records, emptyLabel }: { records: OutstandingRecor
 
   const q = search.trim().toLowerCase();
   const filtered = q
-    ? records.filter(r => r.contactName.toLowerCase().includes(q) || (r.number || '').toLowerCase().includes(q))
+    ? records.filter(r => (r.contactName || '').toLowerCase().includes(q) || String(r.number || '').toLowerCase().includes(q))
     : records;
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
@@ -383,6 +383,30 @@ function triggerDownload(csvContent: string, filename: string): void {
 }
 function todayStr(): string { return new Date().toISOString().slice(0, 10); }
 // ───────────────────────────────────────────────────────────────────────────
+
+class EstimatesErrorBoundary extends Component<{ children: React.ReactNode }, { error: Error | null }> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  componentDidCatch(error: Error, info: ErrorInfo) { console.error('[EstimatesInvoices] Render error:', error, info); }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="flex flex-col items-center justify-center py-16 gap-3">
+          <AlertCircle className="w-8 h-8 text-rose-400" />
+          <p className="text-sm font-bold text-slate-700">Something went wrong displaying this section.</p>
+          <p className="text-xs text-slate-400 font-mono max-w-md text-center">{this.state.error.message}</p>
+          <button onClick={() => this.setState({ error: null })} className="mt-2 px-4 py-2 rounded-lg bg-[#1D4ED8] text-white text-xs font-bold hover:bg-blue-700 transition cursor-pointer">
+            Try again
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 export default function EstimatesInvoicesDashboardView({ reportData, outstandingReport, isOutstandingLoading, outstandingError, token, locationName }: EstimatesInvoicesDashboardViewProps) {
   const { estimates, invoices, crossMetrics } = reportData;
@@ -931,5 +955,13 @@ export default function EstimatesInvoicesDashboardView({ reportData, outstanding
       </div>
 
     </div>
+  );
+}
+
+export function EstimatesInvoicesDashboardViewWithBoundary(props: Parameters<typeof EstimatesInvoicesDashboardView>[0]) {
+  return (
+    <EstimatesErrorBoundary>
+      <EstimatesInvoicesDashboardView {...props} />
+    </EstimatesErrorBoundary>
   );
 }
