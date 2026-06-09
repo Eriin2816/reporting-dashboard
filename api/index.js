@@ -3478,22 +3478,32 @@ app.post('/api/integrations/meta/connect', requireAuth(), async (req, res) => {
   const cleanId = adAccountId.replace(/^act_/, '').trim();
   if (!cleanId || !/^\d+$/.test(cleanId)) return res.status(400).json({ status: 'error', error: 'adAccountId must be numeric (e.g. 123456789 or act_123456789).' });
   try {
+    // Validate token
     const meRes = await fetch(`https://graph.facebook.com/v22.0/me?access_token=${encodeURIComponent(rawToken)}`);
     if (!meRes.ok) {
       const errBody = await meRes.json();
       return res.status(400).json({ status: 'error', error: errBody?.error?.message || 'Invalid Meta access token.' });
     }
-    let adAccountName = `act_${cleanId}`;
-    const acctRes = await fetch(`https://graph.facebook.com/v22.0/act_${cleanId}?fields=name&access_token=${encodeURIComponent(rawToken)}`);
-    if (acctRes.ok) { const d = await acctRes.json(); if (d.name) adAccountName = d.name; }
+    // Validate token has access to the ad account (hard fail — surfaces "not assigned" errors)
+    const acctRes = await fetch(`https://graph.facebook.com/v22.0/act_${cleanId}?fields=name,account_status&access_token=${encodeURIComponent(rawToken)}`);
+    const acctData = await acctRes.json();
+    if (!acctRes.ok || acctData.error) {
+      const msg = acctData?.error?.message || 'Cannot access this Ad Account. Verify the account ID and that your token has ads_read permission assigned to this account.';
+      return res.status(400).json({ status: 'error', error: msg });
+    }
+    const adAccountName = acctData.name || `act_${cleanId}`;
     const now = new Date().toISOString();
-    await supabaseAdmin.from('workspace_integrations').upsert({
+    const { error: upsertErr } = await supabaseAdmin.from('workspace_integrations').upsert({
       id: `int_meta_${req.workspace.id}`,
       workspace_id: req.workspace.id, provider: 'meta_ads', status: 'CONNECTED',
       encrypted_access_token: encryptToken(rawToken), encrypted_refresh_token: null,
       token_expiry: null, property_id: cleanId, property_name: adAccountName,
       connected_at: now, last_synced_at: now,
     }, { onConflict: 'workspace_id,provider' });
+    if (upsertErr) {
+      console.error('[Meta connect] Supabase upsert error:', upsertErr);
+      return res.status(500).json({ status: 'error', error: `Database error: ${upsertErr.message}` });
+    }
     try { await logAction(req.workspace.id, req.user.id, req.user.email, 'CONNECT_META_ADS', `Meta Ads connected: act_${cleanId}`); } catch {}
     return res.json({ status: 'success', message: 'Meta Ads connected.', adAccountName });
   } catch (err) { return res.status(500).json({ status: 'error', error: err.message }); }
