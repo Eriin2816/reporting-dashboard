@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   FileText,
   Receipt,
@@ -19,7 +19,10 @@ import {
   CalendarClock,
   BarChart2,
   MessageSquare,
-  Download
+  Download,
+  Search,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -67,6 +70,43 @@ const AGING_COLORS = {
   days61plus: { bg: 'bg-rose-50',   border: 'border-rose-200',   text: 'text-rose-700',   label: '60+ Days' },
 };
 
+const PAGE_SIZE = 10;
+
+function PaginationBar({ page, totalPages, total, onPage }: { page: number; totalPages: number; total: number; onPage: (p: number) => void }) {
+  if (totalPages <= 1) return null;
+  const start = page * PAGE_SIZE + 1;
+  const end = Math.min((page + 1) * PAGE_SIZE, total);
+  return (
+    <div className="flex items-center justify-between px-5 py-3 border-t border-slate-100 bg-slate-50/40 text-xs select-none">
+      <span className="text-slate-400 font-semibold">{start}–{end} of {total}</span>
+      <div className="flex items-center gap-1">
+        <button onClick={() => onPage(page - 1)} disabled={page === 0}
+          className="p-1.5 rounded-lg border border-slate-200 hover:border-[#1D4ED8] hover:text-[#1D4ED8] disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer transition">
+          <ChevronLeft className="w-3.5 h-3.5" />
+        </button>
+        <span className="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-600 font-bold text-[11px]">{page + 1} / {totalPages}</span>
+        <button onClick={() => onPage(page + 1)} disabled={page >= totalPages - 1}
+          className="p-1.5 rounded-lg border border-slate-200 hover:border-[#1D4ED8] hover:text-[#1D4ED8] disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer transition">
+          <ChevronRight className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SearchInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
+  return (
+    <div className="relative">
+      <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+      <input
+        type="text" value={value} onChange={e => onChange(e.target.value)}
+        placeholder={placeholder || 'Search by contact or number…'}
+        className="bg-white border border-slate-200 focus:border-[#1D4ED8] rounded-lg pl-9 pr-3 py-1.5 text-xs text-slate-800 placeholder-slate-400 focus:outline-none w-52 shadow-sm transition"
+      />
+    </div>
+  );
+}
+
 function StatusPill({ status }: { status: string }) {
   const key = (status || '').toUpperCase();
   const color = STATUS_COLORS[key] || '#94a3b8';
@@ -110,13 +150,22 @@ type SortCol = 'sentDate' | 'amount' | 'daysOutstanding';
 function OutstandingTable({ records, emptyLabel }: { records: OutstandingRecord[]; emptyLabel: string }) {
   const [sortCol, setSortCol] = useState<SortCol>('sentDate');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  const [search, setSearch] = useState('');
+  const [page, setPage] = useState(0);
+
+  useEffect(() => { setPage(0); }, [search]);
 
   function handleSort(col: SortCol) {
     if (col === sortCol) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
     else { setSortCol(col); setSortDir('desc'); }
   }
 
-  const sorted = [...records].sort((a, b) => {
+  const q = search.trim().toLowerCase();
+  const filtered = q
+    ? records.filter(r => r.contactName.toLowerCase().includes(q) || (r.number || '').toLowerCase().includes(q))
+    : records;
+
+  const sorted = [...filtered].sort((a, b) => {
     let diff = 0;
     if (sortCol === 'sentDate') {
       diff = (a.sentDate ? new Date(a.sentDate).getTime() : 0) - (b.sentDate ? new Date(b.sentDate).getTime() : 0);
@@ -128,6 +177,9 @@ function OutstandingTable({ records, emptyLabel }: { records: OutstandingRecord[
     return sortDir === 'asc' ? diff : -diff;
   });
 
+  const totalPages = Math.ceil(sorted.length / PAGE_SIZE);
+  const pageRows = sorted.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+
   function SortIndicator({ col }: { col: SortCol }) {
     if (col !== sortCol) return <span className="text-slate-300 ml-0.5">↕</span>;
     return <span className="text-[#1D4ED8] ml-0.5">{sortDir === 'asc' ? '↑' : '↓'}</span>;
@@ -138,42 +190,177 @@ function OutstandingTable({ records, emptyLabel }: { records: OutstandingRecord[
   }
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-left text-xs border-collapse">
-        <thead>
-          <tr className="bg-slate-50 border-b border-[#E2E8F0] text-[#64748B] font-extrabold uppercase tracking-wider text-[9px]">
-            <th className="py-2.5 px-4">#</th>
-            <th className="py-2.5 px-4">Contact / Lead</th>
-            <th className="py-2.5 px-4">Description</th>
-            <th className="py-2.5 px-4">Status</th>
-            <th className="py-2.5 px-4 cursor-pointer hover:text-[#1D4ED8] select-none whitespace-nowrap" onClick={() => handleSort('sentDate')}>
-              Sent <SortIndicator col="sentDate" />
-            </th>
-            <th className="py-2.5 px-4 text-right cursor-pointer hover:text-[#1D4ED8] select-none whitespace-nowrap" onClick={() => handleSort('amount')}>
-              Amount <SortIndicator col="amount" />
-            </th>
-            <th className="py-2.5 px-4 text-center cursor-pointer hover:text-[#1D4ED8] select-none whitespace-nowrap" onClick={() => handleSort('daysOutstanding')}>
-              Days Out <SortIndicator col="daysOutstanding" />
-            </th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-100">
-          {sorted.map(r => (
-            <tr key={r.id} className="hover:bg-slate-50 transition">
-              <td className="py-2.5 px-4 font-mono text-slate-500 text-[10px] whitespace-nowrap">{r.number || '—'}</td>
-              <td className="py-2.5 px-4">
-                <span className="font-semibold text-slate-800 block">{r.contactName}</span>
-                {r.contactEmail && <span className="text-[9px] text-slate-400 font-mono">{r.contactEmail}</span>}
-              </td>
-              <td className="py-2.5 px-4 text-slate-600 max-w-[180px] truncate" title={r.name}>{r.name || '—'}</td>
-              <td className="py-2.5 px-4"><StatusPill status={r.status} /></td>
-              <td className="py-2.5 px-4 text-slate-500 whitespace-nowrap">{fmtSentDate(r.sentDate)}</td>
-              <td className="py-2.5 px-4 text-right font-mono font-bold text-slate-800">{fmt$(r.amount)}</td>
-              <td className="py-2.5 px-4 text-center"><DaysOutBadge days={r.daysOutstanding} /></td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div>
+      <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 bg-slate-50/30">
+        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{filtered.length} of {records.length} records</span>
+        <SearchInput value={search} onChange={setSearch} />
+      </div>
+      {filtered.length === 0 ? (
+        <div className="py-8 text-center text-xs text-slate-400 font-semibold">No results for "{search}"</div>
+      ) : (
+        <>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="bg-slate-50 border-b border-[#E2E8F0] text-[#64748B] font-extrabold uppercase tracking-wider text-[9px]">
+                  <th className="py-2.5 px-4">#</th>
+                  <th className="py-2.5 px-4">Contact / Lead</th>
+                  <th className="py-2.5 px-4">Description</th>
+                  <th className="py-2.5 px-4">Status</th>
+                  <th className="py-2.5 px-4 cursor-pointer hover:text-[#1D4ED8] select-none whitespace-nowrap" onClick={() => handleSort('sentDate')}>
+                    Sent <SortIndicator col="sentDate" />
+                  </th>
+                  <th className="py-2.5 px-4 text-right cursor-pointer hover:text-[#1D4ED8] select-none whitespace-nowrap" onClick={() => handleSort('amount')}>
+                    Amount <SortIndicator col="amount" />
+                  </th>
+                  <th className="py-2.5 px-4 text-center cursor-pointer hover:text-[#1D4ED8] select-none whitespace-nowrap" onClick={() => handleSort('daysOutstanding')}>
+                    Days Out <SortIndicator col="daysOutstanding" />
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {pageRows.map(r => (
+                  <tr key={r.id} className="hover:bg-slate-50 transition">
+                    <td className="py-2.5 px-4 font-mono text-slate-500 text-[10px] whitespace-nowrap">{r.number || '—'}</td>
+                    <td className="py-2.5 px-4">
+                      <span className="font-semibold text-slate-800 block">{r.contactName}</span>
+                      {r.contactEmail && <span className="text-[9px] text-slate-400 font-mono">{r.contactEmail}</span>}
+                    </td>
+                    <td className="py-2.5 px-4 text-slate-600 max-w-[180px] truncate" title={r.name}>{r.name || '—'}</td>
+                    <td className="py-2.5 px-4"><StatusPill status={r.status} /></td>
+                    <td className="py-2.5 px-4 text-slate-500 whitespace-nowrap">{fmtSentDate(r.sentDate)}</td>
+                    <td className="py-2.5 px-4 text-right font-mono font-bold text-slate-800">{fmt$(r.amount)}</td>
+                    <td className="py-2.5 px-4 text-center"><DaysOutBadge days={r.daysOutstanding} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <PaginationBar page={page} totalPages={totalPages} total={filtered.length} onPage={setPage} />
+        </>
+      )}
+    </div>
+  );
+}
+
+function PaidInvoicesTable({ records, emptyLabel }: { records: OutstandingRecord[]; emptyLabel: string }) {
+  const [search, setSearch] = useState('');
+  const [page, setPage] = useState(0);
+  useEffect(() => { setPage(0); }, [search]);
+
+  const q = search.trim().toLowerCase();
+  const filtered = q
+    ? records.filter(r => r.contactName.toLowerCase().includes(q) || (r.number || '').toLowerCase().includes(q))
+    : records;
+
+  const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
+  const pageRows = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+
+  if (records.length === 0) {
+    return <div className="py-8 text-center text-xs text-slate-400 font-semibold">{emptyLabel}</div>;
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 bg-slate-50/30">
+        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{filtered.length} of {records.length} records</span>
+        <SearchInput value={search} onChange={setSearch} />
+      </div>
+      {filtered.length === 0 ? (
+        <div className="py-8 text-center text-xs text-slate-400 font-semibold">No results for "{search}"</div>
+      ) : (
+        <>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="bg-slate-50 border-b border-[#E2E8F0] text-[#64748B] font-extrabold uppercase tracking-wider text-[9px]">
+                  <th className="py-2.5 px-4">Invoice #</th>
+                  <th className="py-2.5 px-4">Contact</th>
+                  <th className="py-2.5 px-4 text-right">Total</th>
+                  <th className="py-2.5 px-4">Paid Date</th>
+                  <th className="py-2.5 px-4">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {pageRows.map(r => (
+                  <tr key={r.id} className="hover:bg-slate-50 transition">
+                    <td className="py-2.5 px-4 font-mono text-slate-500 text-[10px] whitespace-nowrap">{r.number || '—'}</td>
+                    <td className="py-2.5 px-4">
+                      <span className="font-semibold text-slate-800 block">{r.contactName}</span>
+                      {r.contactEmail && <span className="text-[9px] text-slate-400 font-mono">{r.contactEmail}</span>}
+                    </td>
+                    <td className="py-2.5 px-4 text-right font-mono font-bold text-slate-800">{fmt$(r.amount)}</td>
+                    <td className="py-2.5 px-4 text-slate-500 whitespace-nowrap">{fmtSentDate(r.sentDate)}</td>
+                    <td className="py-2.5 px-4"><StatusPill status={r.status} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <PaginationBar page={page} totalPages={totalPages} total={filtered.length} onPage={setPage} />
+        </>
+      )}
+    </div>
+  );
+}
+
+function EstimatesSentTable({ records, emptyLabel }: { records: OutstandingRecord[]; emptyLabel: string }) {
+  const [search, setSearch] = useState('');
+  const [page, setPage] = useState(0);
+  useEffect(() => { setPage(0); }, [search]);
+
+  const q = search.trim().toLowerCase();
+  const filtered = q
+    ? records.filter(r => r.contactName.toLowerCase().includes(q) || (r.number || '').toLowerCase().includes(q))
+    : records;
+
+  const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
+  const pageRows = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+
+  if (records.length === 0) {
+    return <div className="py-8 text-center text-xs text-slate-400 font-semibold">{emptyLabel}</div>;
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 bg-slate-50/30">
+        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{filtered.length} of {records.length} records</span>
+        <SearchInput value={search} onChange={setSearch} />
+      </div>
+      {filtered.length === 0 ? (
+        <div className="py-8 text-center text-xs text-slate-400 font-semibold">No results for "{search}"</div>
+      ) : (
+        <>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="bg-slate-50 border-b border-[#E2E8F0] text-[#64748B] font-extrabold uppercase tracking-wider text-[9px]">
+                  <th className="py-2.5 px-4">Estimate #</th>
+                  <th className="py-2.5 px-4">Contact</th>
+                  <th className="py-2.5 px-4">Status</th>
+                  <th className="py-2.5 px-4">Sent Date</th>
+                  <th className="py-2.5 px-4 text-right">Amount</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {pageRows.map(r => (
+                  <tr key={r.id} className="hover:bg-slate-50 transition">
+                    <td className="py-2.5 px-4 font-mono text-slate-500 text-[10px] whitespace-nowrap">{r.number || '—'}</td>
+                    <td className="py-2.5 px-4">
+                      <span className="font-semibold text-slate-800 block">{r.contactName}</span>
+                      {r.contactEmail && <span className="text-[9px] text-slate-400 font-mono">{r.contactEmail}</span>}
+                    </td>
+                    <td className="py-2.5 px-4"><StatusPill status={r.status} /></td>
+                    <td className="py-2.5 px-4 text-slate-500 whitespace-nowrap">{fmtSentDate(r.sentDate)}</td>
+                    <td className="py-2.5 px-4 text-right font-mono font-bold text-slate-800">{fmt$(r.amount)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <PaginationBar page={page} totalPages={totalPages} total={filtered.length} onPage={setPage} />
+        </>
+      )}
     </div>
   );
 }
@@ -480,6 +667,34 @@ export default function EstimatesInvoicesDashboardView({ reportData, outstanding
             );
           })()}
 
+          {/* ── PAID INVOICES DETAIL LIST ── */}
+          {outstandingReport && (
+            <div className="bg-white border border-[#E2E8F0] shadow-sm rounded-xl overflow-hidden">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-5 py-4 border-b border-slate-100 bg-[#F8FAFC]">
+                <div className="flex items-center gap-2.5">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                  <div>
+                    <h3 className="text-sm font-extrabold text-[#0F172A]">Paid Invoices</h3>
+                    <p className="text-[10px] text-slate-500 font-semibold mt-0.5">All collected invoices (all-time)</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[9px] font-black uppercase tracking-widest bg-emerald-50 text-emerald-700 border border-emerald-200 px-2.5 py-1 rounded-full whitespace-nowrap">
+                    {outstandingReport.paidInvoices.count} paid · {fmt$(outstandingReport.paidInvoices.totalValue)}
+                  </span>
+                </div>
+              </div>
+              {isOutstandingLoading ? (
+                <div className="flex items-center gap-3 justify-center py-10">
+                  <RefreshCw className="w-4 h-4 text-[#1D4ED8] animate-spin" />
+                  <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Loading…</span>
+                </div>
+              ) : (
+                <PaidInvoicesTable records={outstandingReport.paidInvoices.records} emptyLabel="No paid invoices found" />
+              )}
+            </div>
+          )}
+
         </>
       )}
 
@@ -640,6 +855,38 @@ export default function EstimatesInvoicesDashboardView({ reportData, outstanding
               </div>
             </div>
           </div>
+
+          {/* ── ALL SENT ESTIMATES DETAIL LIST ── */}
+          {outstandingReport && (
+            <div className="bg-white border border-[#E2E8F0] shadow-sm rounded-xl overflow-hidden">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-5 py-4 border-b border-slate-100 bg-[#F8FAFC]">
+                <div className="flex items-center gap-2.5">
+                  <FileText className="w-5 h-5 text-[#1D4ED8]" />
+                  <div>
+                    <h3 className="text-sm font-extrabold text-[#0F172A]">Estimates Sent — Detail List</h3>
+                    <p className="text-[10px] text-slate-500 font-semibold mt-0.5">All non-draft estimates with exact GHL status (all-time)</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[9px] font-black uppercase tracking-widest bg-blue-50 text-blue-700 border border-blue-200 px-2.5 py-1 rounded-full whitespace-nowrap">
+                    {outstandingReport.allSentEstimates.count} estimates · {fmt$(outstandingReport.allSentEstimates.totalValue)}
+                  </span>
+                  <span className="text-[9px] font-black uppercase tracking-widest bg-amber-50 text-amber-700 border border-amber-200 px-2.5 py-1 rounded-full whitespace-nowrap">
+                    All-time · not affected by date filter
+                  </span>
+                </div>
+              </div>
+              {isOutstandingLoading ? (
+                <div className="flex items-center gap-3 justify-center py-10">
+                  <RefreshCw className="w-4 h-4 text-[#1D4ED8] animate-spin" />
+                  <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Loading…</span>
+                </div>
+              ) : (
+                <EstimatesSentTable records={outstandingReport.allSentEstimates.records} emptyLabel="No sent estimates found" />
+              )}
+            </div>
+          )}
+
         </>
       )}
 

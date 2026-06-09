@@ -38,6 +38,14 @@ const globalRateLimits = { remaining: 100, limit: 100, resetTime: 0 };
 interface CacheEntry { data: any; timestamp: number; ttlMs: number; }
 const serverCacheMemory: Record<string, CacheEntry> = {};
 
+// Shared raw-data caches — prevent duplicate GHL fetches when multiple compute
+// functions (e.g. estimates-invoices + outstanding) need the same records.
+const rawEstInvCache: Record<string, { rawEstimates: any[]; rawInvoices: any[]; cachedAt: number }> = {};
+const RAW_EST_INV_TTL_MS = 10 * 60 * 1000; // 10 min
+
+const rawCrmCache: Record<string, { data: any; cachedAt: number }> = {};
+const RAW_CRM_TTL_MS = 10 * 60 * 1000; // 10 min
+
 // ==========================================
 // 2. AUTH RESOLVER
 // ==========================================
@@ -185,6 +193,10 @@ export function invalidateWorkspaceCacheStore(workspaceId: string) {
   Object.keys(serverCacheMemory)
     .filter(k => k.startsWith(`${workspaceId}_`))
     .forEach(k => delete serverCacheMemory[k]);
+  delete rawEstInvCache[workspaceId];
+  Object.keys(rawCrmCache)
+    .filter(k => k.startsWith(`${workspaceId}_`))
+    .forEach(k => delete rawCrmCache[k]);
   console.log(`[Cache] Flushed for workspace: ${workspaceId}`);
 }
 
@@ -296,8 +308,17 @@ async function fetchAllConversations(workspaceId: string): Promise<any[]> {
 
 export async function getLiveCRMData(
   workspaceId: string,
-  opts: { startDate?: string; endDate?: string } = {}
+  opts: { startDate?: string; endDate?: string; force?: boolean } = {}
 ) {
+  const crmCacheKey = `${workspaceId}_${opts.startDate || ''}_${opts.endDate || ''}`;
+  if (!opts.force) {
+    const cached = rawCrmCache[crmCacheKey];
+    if (cached && Date.now() - cached.cachedAt < RAW_CRM_TTL_MS) {
+      console.log(`[RawCrmCache] HIT for ${workspaceId}`);
+      return cached.data;
+    }
+  }
+
   const warnings: string[] = [];
   const unavailableMetrics: string[] = [];
 
@@ -455,7 +476,9 @@ export async function getLiveCRMData(
     })()
   ]);
 
-  return { contacts, opportunities, appointments, users, conversations, warnings, unavailableMetrics };
+  const result = { contacts, opportunities, appointments, users, conversations, warnings, unavailableMetrics };
+  rawCrmCache[crmCacheKey] = { data: result, cachedAt: Date.now() };
+  return result;
 }
 
 // ==========================================
@@ -985,44 +1008,91 @@ function normalizeInvoiceStatus(raw: string): string {
 
 // Estimates: path is /invoices/estimate/list (singular + /list), offset-based pagination
 // Response: { estimates: [...], total: N }
+// Fetches page 0 first to learn total, then remaining pages in parallel (5 at a time).
 async function fetchAllEstimates(workspaceId: string, locationId: string, opts: { startDate?: string; endDate?: string } = {}): Promise<any[]> {
-  const all: any[] = [];
-  for (let offset = 0; offset < 10000; offset += 100) {
+  const makeParams = (offset: number) => {
     const p = new URLSearchParams({ altId: locationId, altType: 'location', limit: '100', offset: String(offset) });
     if (opts.startDate) p.set('startDate', opts.startDate);
     if (opts.endDate) p.set('endDate', opts.endDate);
-    const res = await fetchFromGHLAPI<{ estimates?: any[]; total?: number }>(
-      `invoices/estimate/list?${p}`, workspaceId
+    return p.toString();
+  };
+  const res0 = await fetchFromGHLAPI<{ estimates?: any[]; total?: number }>(
+    `invoices/estimate/list?${makeParams(0)}`, workspaceId
+  );
+  const batch0 = res0.data?.estimates ?? [];
+  const total = Number(res0.data?.total) || 0;
+  if (batch0.length < 100 || total <= 100) return batch0;
+
+  const remainingOffsets: number[] = [];
+  for (let off = 100; off < Math.min(total, 10000); off += 100) remainingOffsets.push(off);
+
+  const all = [...batch0];
+  for (let i = 0; i < remainingOffsets.length; i += 5) {
+    const chunk = remainingOffsets.slice(i, i + 5);
+    const results = await Promise.all(
+      chunk.map(off => fetchFromGHLAPI<{ estimates?: any[] }>(`invoices/estimate/list?${makeParams(off)}`, workspaceId))
     );
-    const batch = res.data?.estimates ?? [];
-    const total = Number(res.data?.total) || 0;
-    all.push(...batch);
-    if (batch.length < 100 || (total > 0 && offset + 100 >= total)) break;
+    results.forEach(r => all.push(...(r.data?.estimates ?? [])));
   }
   return all;
 }
 
 // Invoices: offset-based pagination, response: { invoices: [...], total: N }
+// Same parallel-page strategy as fetchAllEstimates.
 async function fetchAllInvoices(workspaceId: string, locationId: string, opts: { startDate?: string; endDate?: string } = {}): Promise<any[]> {
-  const all: any[] = [];
-  for (let offset = 0; offset < 10000; offset += 100) {
+  const makeParams = (offset: number) => {
     const p = new URLSearchParams({ altId: locationId, altType: 'location', limit: '100', offset: String(offset) });
     if (opts.startDate) p.set('startDate', opts.startDate);
     if (opts.endDate) p.set('endDate', opts.endDate);
-    const res = await fetchFromGHLAPI<{ invoices?: any[]; total?: number }>(
-      `invoices/?${p}`, workspaceId
+    return p.toString();
+  };
+  const res0 = await fetchFromGHLAPI<{ invoices?: any[]; total?: number }>(
+    `invoices/?${makeParams(0)}`, workspaceId
+  );
+  const batch0 = res0.data?.invoices ?? [];
+  const total = Number(res0.data?.total) || 0;
+  if (batch0.length < 100 || total <= 100) return batch0;
+
+  const remainingOffsets: number[] = [];
+  for (let off = 100; off < Math.min(total, 10000); off += 100) remainingOffsets.push(off);
+
+  const all = [...batch0];
+  for (let i = 0; i < remainingOffsets.length; i += 5) {
+    const chunk = remainingOffsets.slice(i, i + 5);
+    const results = await Promise.all(
+      chunk.map(off => fetchFromGHLAPI<{ invoices?: any[] }>(`invoices/?${makeParams(off)}`, workspaceId))
     );
-    const batch = res.data?.invoices ?? [];
-    const total = Number(res.data?.total) || 0;
-    all.push(...batch);
-    if (batch.length < 100 || (total > 0 && offset + 100 >= total)) break;
+    results.forEach(r => all.push(...(r.data?.invoices ?? [])));
   }
   return all;
 }
 
+// Shared raw-data helper: fetches (or serves from cache) all estimates + invoices.
+// Both computeLiveEstimatesInvoicesReport and computeLiveOutstandingReport call this
+// so the same GHL records are never downloaded twice in the same process window.
+async function getOrFetchRawEstInv(
+  workspaceId: string,
+  locationId: string,
+  force = false
+): Promise<{ rawEstimates: any[]; rawInvoices: any[] }> {
+  const cached = rawEstInvCache[workspaceId];
+  if (!force && cached && Date.now() - cached.cachedAt < RAW_EST_INV_TTL_MS) {
+    console.log(`[RawEstInvCache] HIT for ${workspaceId}`);
+    return { rawEstimates: cached.rawEstimates, rawInvoices: cached.rawInvoices };
+  }
+  let rawEstimates: any[] = [];
+  let rawInvoices: any[] = [];
+  await Promise.all([
+    (async () => { try { rawEstimates = await fetchAllEstimates(workspaceId, locationId, {}); } catch (e: any) { console.warn('[RawEstInvCache] estimates fetch failed', e?.message); } })(),
+    (async () => { try { rawInvoices  = await fetchAllInvoices(workspaceId, locationId, {});  } catch (e: any) { console.warn('[RawEstInvCache] invoices fetch failed',  e?.message); } })()
+  ]);
+  rawEstInvCache[workspaceId] = { rawEstimates, rawInvoices, cachedAt: Date.now() };
+  return { rawEstimates, rawInvoices };
+}
+
 export async function computeLiveEstimatesInvoicesReport(
   workspaceId: string,
-  filters: { startDate?: string; endDate?: string } = {}
+  filters: { startDate?: string; endDate?: string; force?: boolean } = {}
 ): Promise<{ data: EstimatesInvoicesReport; warnings: string[]; unavailableMetrics: string[] }> {
   const warnings: string[] = [];
   const unavailableMetrics: string[] = ['avgDaysToPayment']; // GHL does not expose paidAt timestamp
@@ -1043,16 +1113,12 @@ export async function computeLiveEstimatesInvoicesReport(
   let rawInvoices: any[] = [];
 
   if (locationId) {
-    await Promise.all([
-      (async () => {
-        try { rawEstimates = await fetchAllEstimates(workspaceId, locationId, filters); }
-        catch (err: any) { warnings.push(`Estimates unavailable: ${err.message}`); unavailableMetrics.push('estimates'); }
-      })(),
-      (async () => {
-        try { rawInvoices = await fetchAllInvoices(workspaceId, locationId, filters); }
-        catch (err: any) { warnings.push(`Invoices unavailable: ${err.message}`); unavailableMetrics.push('invoices'); }
-      })()
-    ]);
+    try {
+      ({ rawEstimates, rawInvoices } = await getOrFetchRawEstInv(workspaceId, locationId, !!filters.force));
+    } catch (err: any) {
+      warnings.push(`Estimates/Invoices unavailable: ${err.message}`);
+      unavailableMetrics.push('estimates', 'invoices');
+    }
   }
 
   // ── ESTIMATES — use normalized status + correct GHL field names ──────────
@@ -1185,7 +1251,7 @@ export async function computeLiveEstimatesInvoicesReport(
 const PENDING_ESTIMATE_STATUSES = new Set(['SENT', 'VIEWED']);
 const UNPAID_INVOICE_STATUSES   = new Set(['SENT', 'PARTIAL', 'OVERDUE']);
 
-export async function computeLiveOutstandingReport(workspaceId: string): Promise<{ data: OutstandingReport; warnings: string[] }> {
+export async function computeLiveOutstandingReport(workspaceId: string, force = false): Promise<{ data: OutstandingReport; warnings: string[] }> {
   const warnings: string[] = [];
   const now = Date.now();
 
@@ -1200,16 +1266,11 @@ export async function computeLiveOutstandingReport(workspaceId: string): Promise
   let rawInvoices: any[] = [];
 
   if (locationId) {
-    await Promise.all([
-      (async () => {
-        try { rawEstimates = await fetchAllEstimates(workspaceId, locationId, {}); }
-        catch (err: any) { warnings.push(`Estimates unavailable: ${err.message}`); }
-      })(),
-      (async () => {
-        try { rawInvoices = await fetchAllInvoices(workspaceId, locationId, {}); }
-        catch (err: any) { warnings.push(`Invoices unavailable: ${err.message}`); }
-      })()
-    ]);
+    try {
+      ({ rawEstimates, rawInvoices } = await getOrFetchRawEstInv(workspaceId, locationId, force));
+    } catch (err: any) {
+      warnings.push(`Estimates/Invoices unavailable: ${err.message}`);
+    }
   } else {
     warnings.push('GHL Location ID not configured — outstanding data unavailable.');
   }
@@ -1250,6 +1311,41 @@ export async function computeLiveOutstandingReport(workspaceId: string): Promise
     };
   }
 
+  function buildPaidInvoiceRecord(i: any): OutstandingRecord {
+    const paidDate = i.paidAt || i.updatedAt || i.sentAt || i.issueDate || i.createdAt || '';
+    const contactName = sanitizeContactName(i.contactDetails?.name || i.contact?.name ||
+      (`${i.contact?.firstName || ''} ${i.contact?.lastName || ''}`.trim())) || 'Unknown';
+    return {
+      id: i._id || i.id || '',
+      number: i.invoiceNumber || i.number || '',
+      name: i.name || i.description || '',
+      contactName,
+      contactEmail: i.contactDetails?.email || i.contact?.email || '',
+      status: normalizeInvoiceStatus(i.status || ''),
+      sentDate: paidDate,
+      amount: Number(i.total) || 0,
+      daysOutstanding: 0
+    };
+  }
+
+  function buildAllEstimateRecord(e: any): OutstandingRecord {
+    const sentDate = e.sentAt || e.issueDate || e.updatedAt || e.createdAt || '';
+    const sentMs = sentDate ? new Date(sentDate).getTime() : null;
+    const contactName = sanitizeContactName(e.contactDetails?.name || e.contact?.name ||
+      `${e.contact?.firstName || ''} ${e.contact?.lastName || ''}`) || 'Unknown';
+    return {
+      id: e._id || e.id || '',
+      number: e.estimateNumber || e.number || '',
+      name: e.name || e.title || e.subject || '',
+      contactName,
+      contactEmail: e.contactDetails?.email || e.contact?.email || '',
+      status: (e.estimateStatus || e.status || 'UNKNOWN').toUpperCase(),
+      sentDate,
+      amount: Number(e.total) || 0,
+      daysOutstanding: sentMs ? Math.max(0, Math.floor((now - sentMs) / 86400000)) : 0
+    };
+  }
+
   const pendingEstimateRecords = rawEstimates
     .filter(e => PENDING_ESTIMATE_STATUSES.has(normalizeEstimateStatus(e.estimateStatus || e.status || '')))
     .map(buildEstimateRecord)
@@ -1259,6 +1355,19 @@ export async function computeLiveOutstandingReport(workspaceId: string): Promise
     .filter(i => UNPAID_INVOICE_STATUSES.has(normalizeInvoiceStatus(i.status || '')))
     .map(buildInvoiceRecord)
     .sort((a, b) => b.daysOutstanding - a.daysOutstanding || b.amount - a.amount);
+
+  const paidInvoiceRecords = rawInvoices
+    .filter(i => normalizeInvoiceStatus(i.status || '') === 'PAID')
+    .map(buildPaidInvoiceRecord)
+    .sort((a, b) => new Date(b.sentDate).getTime() - new Date(a.sentDate).getTime());
+
+  const allSentEstimateRecords = rawEstimates
+    .filter(e => {
+      const raw = (e.estimateStatus || e.status || '').toLowerCase();
+      return raw !== 'draft' && raw !== '';
+    })
+    .map(buildAllEstimateRecord)
+    .sort((a, b) => new Date(b.sentDate).getTime() - new Date(a.sentDate).getTime());
 
   return {
     data: {
@@ -1271,6 +1380,16 @@ export async function computeLiveOutstandingReport(workspaceId: string): Promise
         count: unpaidInvoiceRecords.length,
         totalValue: unpaidInvoiceRecords.reduce((s, r) => s + r.amount, 0),
         records: unpaidInvoiceRecords
+      },
+      paidInvoices: {
+        count: paidInvoiceRecords.length,
+        totalValue: paidInvoiceRecords.reduce((s, r) => s + r.amount, 0),
+        records: paidInvoiceRecords
+      },
+      allSentEstimates: {
+        count: allSentEstimateRecords.length,
+        totalValue: allSentEstimateRecords.reduce((s, r) => s + r.amount, 0),
+        records: allSentEstimateRecords
       },
       fetchedAt: new Date().toISOString(),
       warnings
@@ -1365,25 +1484,27 @@ export class LiveReportingService {
 
   static async getOwnerDashboardReport(
     workspaceId: string,
-    filters: { startDate?: string; endDate?: string; userId?: string; source?: string; campaign?: string; } = {}
+    filters: { startDate?: string; endDate?: string; userId?: string; source?: string; campaign?: string; force?: boolean } = {}
   ) {
     const isProd = process.env.NODE_ENV === 'production';
     const settings = db.getReportingSettings(workspaceId);
 
     if (settings.mode === 'MOCK') {
-      return { source: 'mock' as const, data: getMockOwnerReport(filters), warnings: [] as string[], unavailableMetrics: [] as string[], stale: false };
+      return { source: 'mock' as const, data: getMockOwnerReport(filters), warnings: [] as string[], unavailableMetrics: [] as string[], stale: false, cachedAt: Date.now() };
     }
 
     const cacheKey = `owner_${filters.userId||'all'}_${filters.source||'all'}_${filters.startDate||''}_${filters.endDate||''}`;
-    const cached = getReportCache<any>(workspaceId, cacheKey);
-    if (cached && !cached.stale) {
-      return { source: 'live' as const, data: cached.data, warnings: [] as string[], unavailableMetrics: [] as string[], stale: false };
+    if (!filters.force) {
+      const cached = getReportCache<any>(workspaceId, cacheKey);
+      if (cached && !cached.stale) {
+        return { source: 'live' as const, data: cached.data, warnings: [] as string[], unavailableMetrics: [] as string[], stale: false, cachedAt: (serverCacheMemory[`${workspaceId}_${cacheKey}`]?.timestamp) };
+      }
     }
 
     try {
-      const result = await computeLiveOwnerReport(workspaceId, filters);
+      const result = await computeLiveOwnerReport(workspaceId, { ...filters });
       setReportCache(workspaceId, cacheKey, result.data);
-      return { source: 'live' as const, data: result.data, warnings: result.warnings, unavailableMetrics: result.unavailableMetrics, stale: false };
+      return { source: 'live' as const, data: result.data, warnings: result.warnings, unavailableMetrics: result.unavailableMetrics, stale: false, cachedAt: Date.now() };
     } catch (err: any) {
       console.error('[LiveReportingService] Owner failed:', err.message);
       if (isProd) {
@@ -1395,25 +1516,27 @@ export class LiveReportingService {
 
   static async getMarketingDashboardReport(
     workspaceId: string,
-    filters: { startDate?: string; endDate?: string; userId?: string; source?: string; campaign?: string; } = {}
+    filters: { startDate?: string; endDate?: string; userId?: string; source?: string; campaign?: string; force?: boolean } = {}
   ) {
     const isProd = process.env.NODE_ENV === 'production';
     const settings = db.getReportingSettings(workspaceId);
 
     if (settings.mode === 'MOCK') {
-      return { source: 'mock' as const, data: getMockMarketingReport(filters), warnings: [] as string[], unavailableMetrics: [] as string[], stale: false };
+      return { source: 'mock' as const, data: getMockMarketingReport(filters), warnings: [] as string[], unavailableMetrics: [] as string[], stale: false, cachedAt: Date.now() };
     }
 
     const cacheKey = `marketing_${filters.source||'all'}_${filters.campaign||'all'}_${filters.startDate||''}_${filters.endDate||''}`;
-    const cached = getReportCache<any>(workspaceId, cacheKey);
-    if (cached && !cached.stale) {
-      return { source: 'live' as const, data: cached.data, warnings: [] as string[], unavailableMetrics: [] as string[], stale: false };
+    if (!filters.force) {
+      const cached = getReportCache<any>(workspaceId, cacheKey);
+      if (cached && !cached.stale) {
+        return { source: 'live' as const, data: cached.data, warnings: [] as string[], unavailableMetrics: [] as string[], stale: false, cachedAt: (serverCacheMemory[`${workspaceId}_${cacheKey}`]?.timestamp) };
+      }
     }
 
     try {
-      const result = await computeLiveMarketingReport(workspaceId, filters);
+      const result = await computeLiveMarketingReport(workspaceId, { ...filters });
       setReportCache(workspaceId, cacheKey, result.data);
-      return { source: 'live' as const, data: result.data, warnings: result.warnings, unavailableMetrics: result.unavailableMetrics, stale: false };
+      return { source: 'live' as const, data: result.data, warnings: result.warnings, unavailableMetrics: result.unavailableMetrics, stale: false, cachedAt: Date.now() };
     } catch (err: any) {
       console.error('[LiveReportingService] Marketing failed:', err.message);
       if (isProd) {
@@ -1425,7 +1548,7 @@ export class LiveReportingService {
 
   static async getAppointmentDashboardReport(
     workspaceId: string,
-    filters: { startDate?: string; endDate?: string; userId?: string } = {}
+    filters: { startDate?: string; endDate?: string; userId?: string; force?: boolean } = {}
   ) {
     const isProd = process.env.NODE_ENV === 'production';
     const settings = db.getReportingSettings(workspaceId);
@@ -1467,15 +1590,17 @@ export class LiveReportingService {
     }
 
     const cacheKey = `appointment_${filters.userId||'all'}_${filters.startDate||''}_${filters.endDate||''}`;
-    const cached = getReportCache<any>(workspaceId, cacheKey);
-    if (cached && !cached.stale) {
-      return { source: 'live' as const, data: cached.data, warnings: [] as string[], unavailableMetrics: [] as string[], stale: false };
+    if (!filters.force) {
+      const cached = getReportCache<any>(workspaceId, cacheKey);
+      if (cached && !cached.stale) {
+        return { source: 'live' as const, data: cached.data, warnings: [] as string[], unavailableMetrics: [] as string[], stale: false, cachedAt: (serverCacheMemory[`${workspaceId}_${cacheKey}`]?.timestamp) };
+      }
     }
 
     try {
       const result = await computeLiveAppointmentReport(workspaceId, filters);
       setReportCache(workspaceId, cacheKey, result.data);
-      return { source: 'live' as const, data: result.data, warnings: result.warnings, unavailableMetrics: result.unavailableMetrics, stale: false };
+      return { source: 'live' as const, data: result.data, warnings: result.warnings, unavailableMetrics: result.unavailableMetrics, stale: false, cachedAt: Date.now() };
     } catch (err: any) {
       console.error('[LiveReportingService] Appointment failed:', err.message);
       if (isProd) {
@@ -1487,7 +1612,7 @@ export class LiveReportingService {
 
   static async getEstimatesInvoicesReport(
     workspaceId: string,
-    filters: { startDate?: string; endDate?: string } = {}
+    filters: { startDate?: string; endDate?: string; force?: boolean } = {}
   ) {
     const isProd = process.env.NODE_ENV === 'production';
     const settings = db.getReportingSettings(workspaceId);
@@ -1550,15 +1675,17 @@ export class LiveReportingService {
     }
 
     const cacheKey = `estimates_invoices_${filters.startDate||''}_${filters.endDate||''}`;
-    const cached = getReportCache<any>(workspaceId, cacheKey);
-    if (cached && !cached.stale) {
-      return { source: 'live' as const, data: cached.data, warnings: [] as string[], unavailableMetrics: [] as string[], stale: false };
+    if (!filters.force) {
+      const cached = getReportCache<any>(workspaceId, cacheKey);
+      if (cached && !cached.stale) {
+        return { source: 'live' as const, data: cached.data, warnings: [] as string[], unavailableMetrics: [] as string[], stale: false, cachedAt: (serverCacheMemory[`${workspaceId}_${cacheKey}`]?.timestamp) };
+      }
     }
 
     try {
       const result = await computeLiveEstimatesInvoicesReport(workspaceId, filters);
       setReportCache(workspaceId, cacheKey, result.data);
-      return { source: 'live' as const, data: result.data, warnings: result.warnings, unavailableMetrics: result.unavailableMetrics, stale: false };
+      return { source: 'live' as const, data: result.data, warnings: result.warnings, unavailableMetrics: result.unavailableMetrics, stale: false, cachedAt: Date.now() };
     } catch (err: any) {
       console.error('[LiveReportingService] EstimatesInvoices failed:', err.message);
       if (isProd) {
@@ -1568,7 +1695,7 @@ export class LiveReportingService {
     }
   }
 
-  static async getOutstandingReport(workspaceId: string) {
+  static async getOutstandingReport(workspaceId: string, force = false) {
     const isProd = process.env.NODE_ENV === 'production';
     const settings = db.getReportingSettings(workspaceId);
 
@@ -1598,6 +1725,27 @@ export class LiveReportingService {
               { id: 'inv_o5', number: 'INV-0047', name: 'Pool Cleaning Annual Plan',     contactName: 'Henderson Household',    contactEmail: 'henderson@mail.com',    status: 'SENT',    sentDate: d(25),  amount: 56200, daysOutstanding: 25  },
             ] as OutstandingRecord[]
           },
+          paidInvoices: {
+            count: 3,
+            totalValue: 72500,
+            records: [
+              { id: 'pai_m1', number: 'INV-0035', name: 'Pool Installation Full Package', contactName: 'Thomas & Claire Bennett', contactEmail: 'bennett@email.com', status: 'PAID', sentDate: d(-2), amount: 32500, daysOutstanding: 0 },
+              { id: 'pai_m2', number: 'INV-0036', name: 'Pool Heater Replacement',        contactName: 'Sunrise HOA',            contactEmail: 'admin@sunrise-hoa.com', status: 'PAID', sentDate: d(-5), amount: 24800, daysOutstanding: 0 },
+              { id: 'pai_m3', number: 'INV-0037', name: 'Chemical Treatment Package',     contactName: 'Greenfield Estates',     contactEmail: 'ops@greenfield.com',   status: 'PAID', sentDate: d(-8), amount: 15200, daysOutstanding: 0 },
+            ] as OutstandingRecord[]
+          },
+          allSentEstimates: {
+            count: 6,
+            totalValue: 152700,
+            records: [
+              { id: 'aes_m1', number: 'EST-0022', name: 'Pool Renovation Package',       contactName: 'Brian & Lisa Whitmore', contactEmail: 'whitmore@email.com',    status: 'SENT',     sentDate: d(45), amount: 28500, daysOutstanding: 45 },
+              { id: 'aes_m2', number: 'EST-0024', name: 'Equipment Upgrade Quote',        contactName: 'Sunrise Properties',   contactEmail: 'ops@sunrise.com',       status: 'VIEWED',   sentDate: d(28), amount: 14200, daysOutstanding: 28 },
+              { id: 'aes_m3', number: 'EST-0025', name: 'Spa & Water Feature Install',    contactName: 'Martinez Family',      contactEmail: 'martinez@gmail.com',    status: 'ACCEPTED', sentDate: d(20), amount: 31800, daysOutstanding: 20 },
+              { id: 'aes_m4', number: 'EST-0026', name: 'Annual Service Plan',            contactName: 'Valley Club HOA',      contactEmail: 'admin@valleyclub.org',  status: 'VIEWED',   sentDate: d(12), amount: 14700, daysOutstanding: 12 },
+              { id: 'aes_m5', number: 'EST-0027', name: 'Pool Deck Resurfacing',          contactName: 'Rodriguez Brothers',   contactEmail: 'rob@rodriguez.com',     status: 'DECLINED', sentDate: d(8),  amount: 22300, daysOutstanding: 8  },
+              { id: 'aes_m6', number: 'EST-0028', name: 'Pool Lighting System',           contactName: 'Pacific View Condos',  contactEmail: 'mgmt@pvcs.com',         status: 'INVOICED', sentDate: d(3),  amount: 41200, daysOutstanding: 3  },
+            ] as OutstandingRecord[]
+          },
           fetchedAt: new Date().toISOString(),
           warnings: [] as string[]
         } as OutstandingReport,
@@ -1607,15 +1755,17 @@ export class LiveReportingService {
     }
 
     const cacheKey = 'outstanding_alltime';
-    const cached = getReportCache<OutstandingReport>(workspaceId, cacheKey);
-    if (cached && !cached.stale) {
-      return { source: 'live' as const, data: cached.data, warnings: [] as string[], stale: false };
+    if (!force) {
+      const cached = getReportCache<OutstandingReport>(workspaceId, cacheKey);
+      if (cached && !cached.stale) {
+        return { source: 'live' as const, data: cached.data, warnings: [] as string[], stale: false, cachedAt: (serverCacheMemory[`${workspaceId}_${cacheKey}`]?.timestamp) };
+      }
     }
 
     try {
-      const result = await computeLiveOutstandingReport(workspaceId);
+      const result = await computeLiveOutstandingReport(workspaceId, force);
       setReportCache(workspaceId, cacheKey, result.data);
-      return { source: 'live' as const, data: result.data, warnings: result.warnings, stale: false };
+      return { source: 'live' as const, data: result.data, warnings: result.warnings, stale: false, cachedAt: Date.now() };
     } catch (err: any) {
       console.error('[LiveReportingService] Outstanding failed:', err.message);
       if (isProd) {

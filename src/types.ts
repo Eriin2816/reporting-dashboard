@@ -513,6 +513,16 @@ export interface OutstandingReport {
     totalValue: number;
     records: OutstandingRecord[];
   };
+  paidInvoices: {
+    count: number;
+    totalValue: number;
+    records: OutstandingRecord[]; // amount = invoice total; sentDate = paidAt fallback chain
+  };
+  allSentEstimates: {
+    count: number;
+    totalValue: number;
+    records: OutstandingRecord[]; // status = raw GHL status (not normalized)
+  };
   fetchedAt: string;
   warnings: string[];
 }

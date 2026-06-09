@@ -2014,13 +2014,45 @@ async function computeLiveOutstandingReport(workspaceId, force = false) {
     };
   }
 
+  function buildPaidInvoiceRecord(i) {
+    const paidDate = i.paidAt || i.updatedAt || i.sentAt || i.issueDate || i.createdAt || '';
+    const contactName = sanitizeContactName(i.contactDetails?.name || i.contact?.name ||
+      (`${i.contact?.firstName || ''} ${i.contact?.lastName || ''}`.trim())) || 'Unknown';
+    return {
+      id: i._id || i.id || '', number: i.invoiceNumber || i.number || '',
+      name: i.name || i.description || '', contactName,
+      contactEmail: i.contactDetails?.email || i.contact?.email || '',
+      status: normalizeInvoiceStatus(i.status || ''), sentDate: paidDate,
+      amount: Number(i.total) || 0, daysOutstanding: 0
+    };
+  }
+
+  function buildAllEstimateRecord(e) {
+    const sentDate = e.sentAt || e.issueDate || e.updatedAt || e.createdAt || '';
+    const sentMs = sentDate ? new Date(sentDate).getTime() : null;
+    const contactName = sanitizeContactName(e.contactDetails?.name || e.contact?.name ||
+      `${e.contact?.firstName || ''} ${e.contact?.lastName || ''}`) || 'Unknown';
+    return {
+      id: e._id || e.id || '', number: e.estimateNumber || e.number || '',
+      name: e.name || e.title || e.subject || '', contactName,
+      contactEmail: e.contactDetails?.email || e.contact?.email || '',
+      status: (e.estimateStatus || e.status || 'UNKNOWN').toUpperCase(),
+      sentDate, amount: Number(e.total) || 0,
+      daysOutstanding: sentMs ? Math.max(0, Math.floor((now - sentMs) / 86400000)) : 0
+    };
+  }
+
   const pendingEst = rawEstimates.filter(e => PENDING_ESTIMATE_STATUSES.has(normalizeEstimateStatus(e.estimateStatus || e.status || ""))).map(buildEstimateRecord).sort((a, b) => b.daysOutstanding - a.daysOutstanding || b.amount - a.amount);
   const unpaidInv = rawInvoices.filter(i => UNPAID_INVOICE_STATUSES.has(normalizeInvoiceStatus(i.status || ""))).map(buildInvoiceRecord).sort((a, b) => b.daysOutstanding - a.daysOutstanding || b.amount - a.amount);
+  const paidInv = rawInvoices.filter(i => normalizeInvoiceStatus(i.status || '') === 'PAID').map(buildPaidInvoiceRecord).sort((a, b) => new Date(b.sentDate).getTime() - new Date(a.sentDate).getTime());
+  const allSentEst = rawEstimates.filter(e => { const raw = (e.estimateStatus || e.status || '').toLowerCase(); return raw !== 'draft' && raw !== ''; }).map(buildAllEstimateRecord).sort((a, b) => new Date(b.sentDate).getTime() - new Date(a.sentDate).getTime());
 
   return {
     data: {
       pendingEstimates: { count: pendingEst.length, totalValue: pendingEst.reduce((s, r) => s + r.amount, 0), records: pendingEst },
       unpaidInvoices: { count: unpaidInv.length, totalValue: unpaidInv.reduce((s, r) => s + r.amount, 0), records: unpaidInv },
+      paidInvoices: { count: paidInv.length, totalValue: paidInv.reduce((s, r) => s + r.amount, 0), records: paidInv },
+      allSentEstimates: { count: allSentEst.length, totalValue: allSentEst.reduce((s, r) => s + r.amount, 0), records: allSentEst },
       fetchedAt: new Date().toISOString(), warnings
     },
     warnings
@@ -2046,6 +2078,19 @@ LiveReportingService.getOutstandingReport = async function(workspaceId, force = 
           { id: "inv_001", number: "INV-001", name: "Pool Service Contract Q2", contactName: "Amanda Ross", contactEmail: "amanda.ross@email.com", status: "OVERDUE", sentDate: d(65), amount: 9800, daysOutstanding: 65 },
           { id: "inv_002", number: "INV-002", name: "Equipment Installation", contactName: "Brian Donovan", contactEmail: "b.donovan@corp.com", status: "PARTIAL", sentDate: d(28), amount: 7200, daysOutstanding: 28 },
           { id: "inv_003", number: "INV-003", name: "Monthly Maintenance — May", contactName: "Carlos Reyes", contactEmail: "creyes@mail.com", status: "SENT", sentDate: d(12), amount: 4800, daysOutstanding: 12 }
+        ]},
+        paidInvoices: { count: 3, totalValue: 72500, records: [
+          { id: "pai_001", number: "INV-035", name: "Pool Installation Full Package", contactName: "Thomas & Claire Bennett", contactEmail: "bennett@email.com", status: "PAID", sentDate: d(-2), amount: 32500, daysOutstanding: 0 },
+          { id: "pai_002", number: "INV-036", name: "Pool Heater Replacement",        contactName: "Sunrise HOA",            contactEmail: "admin@sunrise-hoa.com", status: "PAID", sentDate: d(-5), amount: 24800, daysOutstanding: 0 },
+          { id: "pai_003", number: "INV-037", name: "Chemical Treatment Package",     contactName: "Greenfield Estates",     contactEmail: "ops@greenfield.com",   status: "PAID", sentDate: d(-8), amount: 15200, daysOutstanding: 0 }
+        ]},
+        allSentEstimates: { count: 6, totalValue: 152700, records: [
+          { id: "aes_001", number: "EST-022", name: "Pool Renovation Package",    contactName: "Brian & Lisa Whitmore", contactEmail: "whitmore@email.com",   status: "SENT",     sentDate: d(45), amount: 28500, daysOutstanding: 45 },
+          { id: "aes_002", number: "EST-024", name: "Equipment Upgrade Quote",    contactName: "Sunrise Properties",   contactEmail: "ops@sunrise.com",      status: "VIEWED",   sentDate: d(28), amount: 14200, daysOutstanding: 28 },
+          { id: "aes_003", number: "EST-025", name: "Spa & Water Feature Install", contactName: "Martinez Family",     contactEmail: "martinez@gmail.com",   status: "ACCEPTED", sentDate: d(20), amount: 31800, daysOutstanding: 20 },
+          { id: "aes_004", number: "EST-026", name: "Annual Service Plan",         contactName: "Valley Club HOA",     contactEmail: "admin@valleyclub.org", status: "VIEWED",   sentDate: d(12), amount: 14700, daysOutstanding: 12 },
+          { id: "aes_005", number: "EST-027", name: "Pool Deck Resurfacing",       contactName: "Rodriguez Brothers",  contactEmail: "rob@rodriguez.com",    status: "DECLINED", sentDate: d(8),  amount: 22300, daysOutstanding: 8  },
+          { id: "aes_006", number: "EST-028", name: "Pool Lighting System",        contactName: "Pacific View Condos", contactEmail: "mgmt@pvcs.com",         status: "INVOICED", sentDate: d(3),  amount: 41200, daysOutstanding: 3  }
         ]},
         fetchedAt: new Date().toISOString(), warnings: []
       },
