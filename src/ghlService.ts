@@ -1307,12 +1307,15 @@ export async function computeLiveOutstandingReport(workspaceId: string, force = 
       status: normalizeInvoiceStatus(i.status || ''),
       sentDate,
       amount: Number(i.amountDue) || 0,
-      daysOutstanding: sentMs ? Math.max(0, Math.floor((now - sentMs) / 86400000)) : 0
+      daysOutstanding: sentMs ? Math.max(0, Math.floor((now - sentMs) / 86400000)) : 0,
+      total: Number(i.total) || 0,
+      dueDate: i.dueDate || ''
     };
   }
 
   function buildPaidInvoiceRecord(i: any): OutstandingRecord {
     const paidDate = i.paidAt || i.updatedAt || i.sentAt || i.issueDate || i.createdAt || '';
+    const issuedAt = i.sentAt || i.issueDate || i.createdAt || '';
     const contactName = sanitizeContactName(i.contactDetails?.name || i.contact?.name ||
       (`${i.contact?.firstName || ''} ${i.contact?.lastName || ''}`.trim())) || 'Unknown';
     return {
@@ -1324,7 +1327,8 @@ export async function computeLiveOutstandingReport(workspaceId: string, force = 
       status: normalizeInvoiceStatus(i.status || ''),
       sentDate: paidDate,
       amount: Number(i.total) || 0,
-      daysOutstanding: 0
+      daysOutstanding: 0,
+      issuedAt
     };
   }
 

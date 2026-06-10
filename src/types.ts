@@ -498,8 +498,13 @@ export interface OutstandingRecord {
   contactEmail: string;
   status: string;        // raw GHL status, not normalized
   sentDate: string;      // ISO — sentAt → issueDate → updatedAt → createdAt fallback
-  amount: number;        // total (estimates) or amountDue (invoices)
+  amount: number;        // total (estimates) or amountDue (unpaid invoices) or total (paid invoices)
   daysOutstanding: number;
+  // Unpaid invoice extras
+  total?: number;        // raw invoice total (separate from amountDue for PARTIAL invoices)
+  dueDate?: string;      // ISO due date
+  // Paid invoice extras
+  issuedAt?: string;     // original sentAt/issueDate (sentDate stores paidAt for paid records)
 }
 
 export interface OutstandingReport {

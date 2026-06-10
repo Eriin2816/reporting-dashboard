@@ -445,6 +445,42 @@ export default function EstimatesInvoicesDashboardView({ reportData, outstanding
     finally { setIsExportingInv(false); }
   }, [token, locationName]);
 
+  const downloadUnpaidCSV = useCallback(() => {
+    if (!outstandingReport) return;
+    const records = outstandingReport.unpaidInvoices.records;
+    const loc = (locationName || 'location').replace(/\s+/g, '');
+    const headers = ['Invoice Number', 'Contact Name', 'Contact Email', 'Total', 'Amount Due', 'Due Date', 'Days Outstanding', 'Status', 'Sent Date'];
+    const rows = records.map(r => [
+      r.number || '',
+      r.contactName || '',
+      r.contactEmail || '',
+      r.total != null ? r.total : r.amount,
+      r.amount,
+      r.dueDate ? r.dueDate.slice(0, 10) : '',
+      r.daysOutstanding,
+      r.status,
+      r.sentDate ? r.sentDate.slice(0, 10) : ''
+    ]);
+    triggerDownload(buildCSV(headers, rows), `DashPro-Unpaid-Invoices-${loc}-${todayStr()}.csv`);
+  }, [outstandingReport, locationName]);
+
+  const downloadPaidCSV = useCallback(() => {
+    if (!outstandingReport) return;
+    const records = outstandingReport.paidInvoices.records;
+    const loc = (locationName || 'location').replace(/\s+/g, '');
+    const headers = ['Invoice Number', 'Contact Name', 'Contact Email', 'Total', 'Paid Date', 'Status', 'Sent Date'];
+    const rows = records.map(r => [
+      r.number || '',
+      r.contactName || '',
+      r.contactEmail || '',
+      r.amount,
+      r.sentDate ? r.sentDate.slice(0, 10) : '',
+      r.status,
+      r.issuedAt ? r.issuedAt.slice(0, 10) : ''
+    ]);
+    triggerDownload(buildCSV(headers, rows), `DashPro-Paid-Invoices-${loc}-${todayStr()}.csv`);
+  }, [outstandingReport, locationName]);
+
   // Funnel chart data
   const funnelData = [
     { name: 'Sent',      value: estimates.funnel.sent,      color: '#3b82f6' },
@@ -706,6 +742,13 @@ export default function EstimatesInvoicesDashboardView({ reportData, outstanding
                   <span className="text-[9px] font-black uppercase tracking-widest bg-emerald-50 text-emerald-700 border border-emerald-200 px-2.5 py-1 rounded-full whitespace-nowrap">
                     {outstandingReport.paidInvoices.count} paid · {fmt$(outstandingReport.paidInvoices.totalValue)}
                   </span>
+                  <button
+                    onClick={downloadPaidCSV}
+                    disabled={outstandingReport.paidInvoices.count === 0}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-white border border-slate-200 hover:border-[#1D4ED8] hover:text-[#1D4ED8] text-slate-600 shadow-sm transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+                  >
+                    <Download className="w-3 h-3" /> Download CSV
+                  </button>
                 </div>
               </div>
               {isOutstandingLoading ? (
@@ -947,6 +990,13 @@ export default function EstimatesInvoicesDashboardView({ reportData, outstanding
               <span className="ml-auto flex items-center gap-3 text-xs font-bold text-rose-800">
                 <span>{outstandingReport.unpaidInvoices.count} record{outstandingReport.unpaidInvoices.count !== 1 ? 's' : ''}</span>
                 <span className="bg-rose-100 border border-rose-200 px-2 py-0.5 rounded-full font-black">{fmt$(outstandingReport.unpaidInvoices.totalValue)}</span>
+                <button
+                  onClick={downloadUnpaidCSV}
+                  disabled={outstandingReport.unpaidInvoices.count === 0}
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold bg-white border border-rose-200 hover:border-[#1D4ED8] hover:text-[#1D4ED8] text-slate-600 shadow-sm transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+                >
+                  <Download className="w-3 h-3" /> Download CSV
+                </button>
               </span>
             </div>
             <OutstandingTable records={outstandingReport.unpaidInvoices.records} emptyLabel="No unpaid invoices" />
