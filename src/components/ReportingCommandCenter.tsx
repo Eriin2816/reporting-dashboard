@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Calendar,
   MapPin,
@@ -14,8 +14,11 @@ import {
   Copy,
   RotateCcw,
   Clock,
-  FileDown
+  FileDown,
+  MoreHorizontal
 } from 'lucide-react';
+import { useOfflineStatus } from '../hooks/useOfflineStatus';
+import OfflineBanner from './OfflineBanner';
 
 // Custom views
 import OverviewDashboardView from './OverviewDashboardView';
@@ -93,6 +96,13 @@ export default function ReportingCommandCenter({
   const [refreshTriggerSeq, setRefreshTriggerSeq] = useState<number>(0);
   const [forceRefresh, setForceRefresh] = useState<boolean>(false);
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
+  const [moreToolsOpen, setMoreToolsOpen] = useState<boolean>(false);
+
+  // Offline / PWA status — auto-refresh when connection returns
+  const handleReconnect = useCallback(() => {
+    setRefreshTriggerSeq(s => s + 1);
+  }, []);
+  const { isOffline, lastSyncTime, recordSync } = useOfflineStatus(handleReconnect);
 
   // Clipboard copy and modal fallback states
   const [copiedSuccess, setCopiedSuccess] = useState<boolean>(false);
@@ -155,6 +165,10 @@ export default function ReportingCommandCenter({
         }
         if (aptData.status === 'success') {
           setAppointmentReport(aptData.data);
+        }
+        // Record successful live sync for offline banner
+        if (ownerData.status === 'success' || markData.status === 'success' || aptData.status === 'success') {
+          recordSync();
         }
 
         // Merge context from all three responses
@@ -678,7 +692,15 @@ export default function ReportingCommandCenter({
 
   return (
     <div className="space-y-6" id="reporting-command-center-container">
-      
+
+      {/* Offline banner — shown when device has no connectivity */}
+      {isOffline && (
+        <OfflineBanner
+          lastSyncTime={lastSyncTime}
+          onRetry={() => setRefreshTriggerSeq(s => s + 1)}
+        />
+      )}
+
       {/* FEATURE 3: PRINT INTERACTIVE STYLE SHEET (Only processed during window.print()) */}
       <style>{`
         @media print {
@@ -863,18 +885,18 @@ export default function ReportingCommandCenter({
 
           {/* UTILITY BUTTONS INTERACTIVE GROUP */}
           <div className="flex flex-wrap items-center gap-2 self-start xl:self-auto" id="util-controls-wrapper">
-            {/* Sync Trigger button */}
+            {/* Sync Trigger button — always visible */}
             <button
               onClick={handleManualRefresh}
               disabled={isSyncing || isLoading}
               title="Force-refresh all data from GoHighLevel — bypasses server cache"
-              className="flex items-center gap-1.5 text-xs bg-white border border-slate-205 hover:bg-slate-50 disabled:bg-slate-100 text-slate-700 hover:text-slate-900 px-3 py-1.5 rounded-lg font-bold shadow-2xs transition cursor-pointer"
+              className="flex items-center gap-1.5 text-xs bg-white border border-slate-205 hover:bg-slate-50 disabled:bg-slate-100 text-slate-700 hover:text-slate-900 px-3 py-2 rounded-lg font-bold shadow-2xs transition cursor-pointer"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isSyncing || isLoading ? 'animate-spin text-blue-600' : 'text-slate-500'}`} />
               <span>{isSyncing || isLoading ? 'Syncing...' : 'Sync'}</span>
             </button>
             {lastSyncedAt && !isLoading && (
-              <span className="text-[10px] text-slate-400 font-medium whitespace-nowrap" title={new Date(lastSyncedAt).toLocaleString()}>
+              <span className="hidden sm:inline text-[10px] text-slate-400 font-medium whitespace-nowrap" title={new Date(lastSyncedAt).toLocaleString()}>
                 <Clock className="w-3 h-3 inline-block mr-0.5 mb-0.5" />
                 {(() => {
                   const diffMs = Date.now() - lastSyncedAt;
@@ -887,43 +909,84 @@ export default function ReportingCommandCenter({
               </span>
             )}
 
-            {/* Copy summary button */}
-            <button
-              onClick={handleCopySummary}
-              title="Copy markdown statistical summary to clipboard"
-              className={`flex items-center gap-1.5 text-xs border px-3 py-1.5 rounded-lg font-bold shadow-2xs transition cursor-pointer ${
-                copiedSuccess 
-                  ? 'bg-emerald-50 text-emerald-800 border-emerald-300' 
-                  : 'bg-white hover:bg-slate-50 text-slate-705 border-slate-205'
-              }`}
-            >
-              <Copy className={`w-3.5 h-3.5 ${copiedSuccess ? 'text-emerald-600' : 'text-slate-500'}`} />
-              <span>{copiedSuccess ? 'Copied View!' : 'Copy Summary'}</span>
-            </button>
+            {/* Desktop: Copy / PDF / Export visible inline */}
+            <div className="hidden sm:flex items-center gap-2">
+              <button
+                onClick={handleCopySummary}
+                title="Copy markdown statistical summary to clipboard"
+                className={`flex items-center gap-1.5 text-xs border px-3 py-1.5 rounded-lg font-bold shadow-2xs transition cursor-pointer ${
+                  copiedSuccess
+                    ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                    : 'bg-white hover:bg-slate-50 text-slate-705 border-slate-205'
+                }`}
+              >
+                <Copy className={`w-3.5 h-3.5 ${copiedSuccess ? 'text-emerald-600' : 'text-slate-500'}`} />
+                <span>{copiedSuccess ? 'Copied!' : 'Copy Summary'}</span>
+              </button>
 
-            {/* Download as PDF */}
-            <button
-              onClick={handleDownloadPDF}
-              disabled={isPdfLoading || isLoading || !ownerReport}
-              title="Download current dashboard view as a PDF file"
-              className="flex items-center gap-1.5 text-xs bg-white border border-slate-205 hover:bg-slate-50 disabled:bg-slate-100 disabled:text-slate-400 text-slate-700 px-3 py-1.5 rounded-lg font-bold shadow-2xs transition cursor-pointer"
-            >
-              <Download className={`w-3.5 h-3.5 ${isPdfLoading ? 'animate-bounce text-blue-600' : 'text-slate-500'}`} />
-              <span>{isPdfLoading ? 'Generating...' : 'Download as PDF'}</span>
-            </button>
+              <button
+                onClick={handleDownloadPDF}
+                disabled={isPdfLoading || isLoading || !ownerReport}
+                title="Download current dashboard view as a PDF file"
+                className="flex items-center gap-1.5 text-xs bg-white border border-slate-205 hover:bg-slate-50 disabled:bg-slate-100 disabled:text-slate-400 text-slate-700 px-3 py-1.5 rounded-lg font-bold shadow-2xs transition cursor-pointer"
+              >
+                <Download className={`w-3.5 h-3.5 ${isPdfLoading ? 'animate-bounce text-blue-600' : 'text-slate-500'}`} />
+                <span>{isPdfLoading ? 'Generating...' : 'Download PDF'}</span>
+              </button>
 
-            <div className="h-4 w-[1px] bg-slate-200" />
+              <div className="h-4 w-[1px] bg-slate-200" />
 
-            {/* Export KPI summary */}
-            <button
-              onClick={handleExportKPIsCSV}
-              disabled={isLoading || !ownerReport}
-              title="Download dashboard top cards KPI summary as CSV"
-              className="flex items-center gap-1.5 text-xs bg-white hover:bg-slate-50 disabled:bg-slate-100 disabled:text-slate-400 text-slate-700 border border-slate-205 px-3 py-1.5 rounded-lg font-bold shadow-2xs transition cursor-pointer"
-            >
-              <FileDown className="w-3.5 h-3.5 text-blue-600" />
-              <span>Export KPIs</span>
-            </button>
+              <button
+                onClick={handleExportKPIsCSV}
+                disabled={isLoading || !ownerReport}
+                title="Download dashboard top cards KPI summary as CSV"
+                className="flex items-center gap-1.5 text-xs bg-white hover:bg-slate-50 disabled:bg-slate-100 disabled:text-slate-400 text-slate-700 border border-slate-205 px-3 py-1.5 rounded-lg font-bold shadow-2xs transition cursor-pointer"
+              >
+                <FileDown className="w-3.5 h-3.5 text-blue-600" />
+                <span>Export KPIs</span>
+              </button>
+            </div>
+
+            {/* Mobile: More menu */}
+            <div className="sm:hidden relative">
+              <button
+                onClick={() => setMoreToolsOpen(v => !v)}
+                className="flex items-center gap-1.5 text-xs bg-white border border-slate-205 hover:bg-slate-50 text-slate-700 px-3 py-2 rounded-lg font-bold shadow-2xs transition cursor-pointer"
+              >
+                <MoreHorizontal className="w-3.5 h-3.5 text-slate-500" />
+                More
+              </button>
+              {moreToolsOpen && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setMoreToolsOpen(false)} />
+                  <div className="absolute right-0 top-full mt-1 z-20 bg-white border border-slate-200 rounded-xl shadow-lg p-1.5 space-y-0.5 min-w-[170px]">
+                    <button
+                      onClick={() => { handleCopySummary(); setMoreToolsOpen(false); }}
+                      className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-xs font-bold cursor-pointer transition ${copiedSuccess ? 'bg-emerald-50 text-emerald-800' : 'hover:bg-slate-50 text-slate-700'}`}
+                    >
+                      <Copy className="w-3.5 h-3.5 shrink-0" />
+                      {copiedSuccess ? 'Copied!' : 'Copy Summary'}
+                    </button>
+                    <button
+                      onClick={() => { handleDownloadPDF(); setMoreToolsOpen(false); }}
+                      disabled={isPdfLoading || isLoading || !ownerReport}
+                      className="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-slate-50 rounded-lg text-xs font-bold text-slate-700 cursor-pointer disabled:opacity-40 transition"
+                    >
+                      <Download className="w-3.5 h-3.5 shrink-0 text-slate-500" />
+                      {isPdfLoading ? 'Generating…' : 'Download PDF'}
+                    </button>
+                    <button
+                      onClick={() => { handleExportKPIsCSV(); setMoreToolsOpen(false); }}
+                      disabled={isLoading || !ownerReport}
+                      className="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-slate-50 rounded-lg text-xs font-bold text-slate-700 cursor-pointer disabled:opacity-40 transition"
+                    >
+                      <FileDown className="w-3.5 h-3.5 shrink-0 text-blue-600" />
+                      Export KPIs
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
 
@@ -949,19 +1012,19 @@ export default function ReportingCommandCenter({
                 <Calendar className="w-3.5 h-3.5 text-[#1D4ED8]" />
                 Date Range Filters
               </label>
-              <div className="flex items-center gap-1 bg-[#F8FAFC] border border-slate-200 rounded-lg px-2.5 py-1.5 shadow-2xs w-full">
+              <div className="flex flex-col sm:flex-row items-stretch gap-1.5 sm:gap-0 bg-[#F8FAFC] border border-slate-200 rounded-lg px-2.5 py-1.5 shadow-2xs w-full">
                 <input
                   type="date"
                   value={startDate}
                   onChange={(e) => setStartDate(e.target.value)}
-                  className="bg-transparent text-xs font-bold text-slate-700 focus:outline-none w-full cursor-pointer"
+                  className="bg-transparent text-xs font-bold text-slate-700 focus:outline-none flex-1 min-w-0 py-1 touch-manipulation cursor-pointer"
                 />
-                <span className="text-[#64748B] text-xs font-semibold px-1 select-none">to</span>
+                <span className="text-[#64748B] text-xs font-semibold px-1 select-none text-center sm:self-center">to</span>
                 <input
                   type="date"
                   value={endDate}
                   onChange={(e) => setEndDate(e.target.value)}
-                  className="bg-transparent text-xs font-bold text-slate-700 focus:outline-none w-full cursor-pointer"
+                  className="bg-transparent text-xs font-bold text-slate-700 focus:outline-none flex-1 min-w-0 py-1 touch-manipulation cursor-pointer"
                 />
               </div>
             </div>

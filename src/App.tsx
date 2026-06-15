@@ -297,9 +297,6 @@ function AppCockpit({ user, activeWorkspace, role, workspaces, token, logout, tr
               <span className="text-white text-xs font-black block mt-0.5 select-all">
                 {activeWorkspace ? activeWorkspace.name : 'Showtime Pool Mechanics'}
               </span>
-              <span className="text-[9px] font-mono text-blue-400 block mt-0.5">
-                loc_id: {activeWorkspace ? activeWorkspace.ghlLocationId : 'loc_g53h7s8a'}
-              </span>
             </div>
 
             {workspaces.length > 1 && (
@@ -549,7 +546,7 @@ function AppCockpit({ user, activeWorkspace, role, workspaces, token, logout, tr
         </header>
 
         {/* Dynamic content rendering with responsive inner wrapper */}
-        <div className="flex-1 p-6 pb-12 overflow-y-auto w-full mx-auto" id="dynamic-reporting-scroller">
+        <div className="flex-1 p-3 pb-16 sm:p-6 sm:pb-12 overflow-y-auto w-full mx-auto" id="dynamic-reporting-scroller">
           
           {/* Main notification Banner for empty/offline setup error fallback */}
           {errorState && (

@@ -246,7 +246,37 @@ export default function MarketingDashboardView({ reportData, ga4Integration, ga4
           </div>
         </div>
 
-        <div className="overflow-x-auto">
+        {/* Mobile cards */}
+        <div className="sm:hidden divide-y divide-slate-100">
+          {filteredCampaigns.length > 0 ? (
+            filteredCampaigns.map(camp => (
+              <div key={camp.campaignId} className="p-4 space-y-2.5">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <span className="font-bold text-xs text-[#0F172A] block">{camp.campaignName}</span>
+                    <span className="text-[10px] text-slate-400 font-mono">{camp.campaignId}</span>
+                  </div>
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-blue-50 text-[#1D4ED8] border border-blue-200 font-bold text-[10px] shrink-0">
+                    <span className="w-1 h-1 rounded-full bg-[#1D4ED8]" />
+                    {camp.conversionRate}%
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[11px]">
+                  <div className="flex justify-between"><span className="text-slate-500">Won Revenue</span><span className="font-bold font-mono text-slate-900">${camp.wonRevenue.toLocaleString()}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Pipeline</span><span className="font-mono text-slate-600">${camp.pipelineValue.toLocaleString()}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Leads</span><span className="font-bold">{camp.leads}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Bookings</span><span className="font-semibold">{camp.bookings}</span></div>
+                  <div className="col-span-2 flex justify-between"><span className="text-slate-500">Ad Spend</span><span className="italic text-slate-500">{camp.cost ? `Est. $${camp.cost.toLocaleString()}` : 'SEO / Organic'}</span></div>
+                </div>
+              </div>
+            ))
+          ) : (
+            <p className="py-8 text-center text-xs text-slate-400 font-semibold">No campaigns discovered matching input filter constraints.</p>
+          )}
+        </div>
+
+        {/* Desktop table */}
+        <div className="hidden sm:block overflow-x-auto">
           <table className="w-full text-left text-xs border-collapse">
             <thead>
               <tr className="bg-slate-50 border-b border-[#E2E8F0] text-[#64748B] font-extrabold uppercase tracking-wider text-[10px]">

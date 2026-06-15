@@ -223,7 +223,7 @@ export default function MetaAdsPanel({ integration, metaReport, isLoading, token
       </div>
 
       {/* KPI cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <KpiCard icon={<DollarSign className="w-5 h-5" />} label="Total Spend" value={fmt$(r.spend)} sub={`$${r.cpc.toFixed(2)} CPC · $${r.cpm.toFixed(2)} CPM`} />
         <KpiCard icon={<Eye className="w-5 h-5" />} label="Impressions" value={fmtN(r.impressions)} sub={`${fmtN(r.reach)} reach · ${r.ctr.toFixed(2)}% CTR`} />
         <KpiCard icon={<MousePointerClick className="w-5 h-5" />} label="Conversions" value={String(r.conversions)} sub={r.conversions > 0 ? `$${r.costPerResult.toFixed(2)} cost/result` : 'No conversions tracked'} />
@@ -234,7 +234,29 @@ export default function MetaAdsPanel({ integration, metaReport, isLoading, token
       {r.campaigns.length > 0 && (
         <div>
           <h4 className="text-xs font-extrabold text-[#0F172A] uppercase tracking-wider mb-3">Campaign Performance</h4>
-          <div className="overflow-x-auto rounded-xl border border-slate-200">
+          {/* Mobile cards */}
+          <div className="sm:hidden rounded-xl border border-slate-200 divide-y divide-slate-100 overflow-hidden">
+            {r.campaigns.map((c, i) => (
+              <div key={c.id || i} className="p-3.5 space-y-2">
+                <div className="flex items-start justify-between gap-2">
+                  <span className="font-semibold text-slate-700 text-xs truncate">{c.name}</span>
+                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${c.roas >= 2 ? 'bg-blue-50 text-blue-700' : c.roas > 0 ? 'bg-amber-50 text-amber-700' : 'text-slate-400'}`}>
+                    {c.roas > 0 ? `${c.roas.toFixed(2)}× ROAS` : 'ROAS —'}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+                  <div className="flex justify-between"><span className="text-slate-500">Spend</span><span className="font-mono font-bold text-slate-700">{fmt$(c.spend)}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Clicks</span><span className="font-mono text-slate-600">{fmtN(c.clicks)}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Impressions</span><span className="font-mono text-slate-500">{fmtN(c.impressions)}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">CTR</span><span className="font-mono text-slate-500">{c.ctr.toFixed(2)}%</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">CPC</span><span className="font-mono text-slate-500">${c.cpc.toFixed(2)}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Conv.</span><span className={`font-bold ${c.conversions > 0 ? 'text-emerald-700' : 'text-slate-400'}`}>{c.conversions}</span></div>
+                </div>
+              </div>
+            ))}
+          </div>
+          {/* Desktop table */}
+          <div className="hidden sm:block overflow-x-auto rounded-xl border border-slate-200">
             <table className="w-full text-left text-xs border-collapse">
               <thead>
                 <tr className="bg-slate-50 border-b border-[#E2E8F0] text-[#64748B] font-extrabold uppercase tracking-wider text-[9px]">

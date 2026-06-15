@@ -417,7 +417,7 @@ export default function GoogleAnalyticsPanel({ integration, ga4Report, isLoading
       </div>
 
       {/* KPI cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <KpiCard icon={<TrendingUp className="w-5 h-5" />} label="Sessions" value={report.sessions.toLocaleString()} sub="Total website sessions" />
         <KpiCard icon={<Users className="w-5 h-5" />} label="Users" value={report.users.toLocaleString()} sub="Total unique users" />
         <KpiCard icon={<ExternalLink className="w-5 h-5" />} label="New Users" value={report.newUsers.toLocaleString()} sub={`${report.users > 0 ? Math.round((report.newUsers / report.users) * 100) : 0}% of total users`} />
@@ -490,7 +490,29 @@ export default function GoogleAnalyticsPanel({ integration, ga4Report, isLoading
       </div>
 
       {/* Channel conversion table */}
-      <div className="overflow-x-auto rounded-xl border border-slate-200">
+      {/* Mobile cards */}
+      <div className="sm:hidden rounded-xl border border-slate-200 divide-y divide-slate-100 overflow-hidden">
+        {report.channelBreakdown.map((ch, i) => (
+          <div key={i} className="p-3.5 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full shrink-0" style={{ background: channelColor(ch.channel) }} />
+                <span className="font-semibold text-slate-700 text-xs">{ch.channel}</span>
+              </div>
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${ch.conversions > 0 ? 'bg-emerald-50 text-emerald-700' : 'text-slate-400'}`}>
+                {ch.sessions > 0 ? ((ch.conversions / ch.sessions) * 100).toFixed(1) : '0.0'}% conv.
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-1 text-[11px]">
+              <div className="flex justify-between"><span className="text-slate-500">Sessions</span><span className="font-mono text-slate-700">{ch.sessions.toLocaleString()}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Users</span><span className="font-mono text-slate-500">{ch.users.toLocaleString()}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Conv.</span><span className="font-mono font-bold text-slate-700">{ch.conversions.toLocaleString()}</span></div>
+            </div>
+          </div>
+        ))}
+      </div>
+      {/* Desktop table */}
+      <div className="hidden sm:block overflow-x-auto rounded-xl border border-slate-200">
         <table className="w-full text-left text-xs border-collapse">
           <thead>
             <tr className="bg-slate-50 border-b border-[#E2E8F0] text-[#64748B] font-extrabold uppercase tracking-wider text-[9px]">

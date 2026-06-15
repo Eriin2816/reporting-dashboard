@@ -426,7 +426,35 @@ export default function OverviewDashboardView({ reportData }: OverviewDashboardV
           </div>
         </div>
 
-        <div className="overflow-x-auto">
+        {/* Mobile cards */}
+        <div className="sm:hidden divide-y divide-slate-100">
+          {ownerBreakdown.map((rep) => (
+            <div key={rep.userId} className="p-4 space-y-2.5">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-full bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-700 font-bold uppercase text-[10px] shrink-0">
+                  {rep.userName.split(' ').map((n: string) => n[0]).join('')}
+                </div>
+                <div className="min-w-0">
+                  <div className="font-bold text-[#0F172A] text-xs">{rep.userName}</div>
+                  <div className="text-[10px] font-mono text-slate-400 truncate">{rep.userEmail}</div>
+                </div>
+                <span className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 shrink-0">
+                  <span className="w-1 h-1 rounded-full bg-emerald-500" />
+                  {rep.closeRate}%
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[11px]">
+                <div className="flex justify-between"><span className="text-slate-500">Won Revenue</span><span className="font-bold font-mono text-slate-900">${rep.wonRevenue.toLocaleString()}</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">Pipeline</span><span className="font-mono text-slate-600">${rep.pipelineValue.toLocaleString()}</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">Contacts</span><span className="font-bold font-mono">{rep.totalLeads}</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">Show Rate</span><span className="font-mono">{rep.showRate}%</span></div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Desktop table */}
+        <div className="hidden sm:block overflow-x-auto">
           <table className="w-full text-left text-xs border-collapse">
             <thead>
               <tr className="bg-slate-50 border-b border-[#E2E8F0] text-[#64748B] font-extrabold uppercase tracking-wider text-[10px]">

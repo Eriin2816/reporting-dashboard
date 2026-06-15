@@ -199,7 +199,31 @@ function OutstandingTable({ records, emptyLabel }: { records: OutstandingRecord[
         <div className="py-8 text-center text-xs text-slate-400 font-semibold">No results for "{search}"</div>
       ) : (
         <>
-          <div className="overflow-x-auto">
+          {/* Mobile cards */}
+          <div className="sm:hidden divide-y divide-slate-100">
+            {pageRows.map(r => (
+              <div key={r.id} className="p-4 space-y-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <span className="font-semibold text-slate-800 text-xs block">{r.contactName}</span>
+                    {r.contactEmail && <span className="text-[9px] text-slate-400 font-mono truncate block">{r.contactEmail}</span>}
+                  </div>
+                  <StatusPill status={r.status} />
+                </div>
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-slate-500 font-mono text-[10px]">#{r.number || '—'}</span>
+                  <span className="font-mono font-bold text-slate-800">{fmt$(r.amount)}</span>
+                </div>
+                {r.name && <p className="text-[10px] text-slate-500 truncate">{r.name}</p>}
+                <div className="flex items-center gap-3 text-[10px] text-slate-400">
+                  <span>{fmtSentDate(r.sentDate)}</span>
+                  <DaysOutBadge days={r.daysOutstanding} />
+                </div>
+              </div>
+            ))}
+          </div>
+          {/* Desktop table */}
+          <div className="hidden sm:block overflow-x-auto">
             <table className="w-full text-left text-xs border-collapse">
               <thead>
                 <tr className="bg-slate-50 border-b border-[#E2E8F0] text-[#64748B] font-extrabold uppercase tracking-wider text-[9px]">
@@ -270,7 +294,27 @@ function PaidInvoicesTable({ records, emptyLabel }: { records: OutstandingRecord
         <div className="py-8 text-center text-xs text-slate-400 font-semibold">No results for "{search}"</div>
       ) : (
         <>
-          <div className="overflow-x-auto">
+          {/* Mobile cards */}
+          <div className="sm:hidden divide-y divide-slate-100">
+            {pageRows.map(r => (
+              <div key={r.id} className="p-4 space-y-1.5">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <span className="font-semibold text-slate-800 text-xs block">{r.contactName}</span>
+                    {r.contactEmail && <span className="text-[9px] text-slate-400 font-mono truncate block">{r.contactEmail}</span>}
+                  </div>
+                  <StatusPill status={r.status} />
+                </div>
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-slate-500 font-mono text-[10px]">#{r.number || '—'}</span>
+                  <span className="font-mono font-bold text-slate-800">{fmt$(r.amount)}</span>
+                </div>
+                <div className="text-[10px] text-slate-400">Paid: {fmtSentDate(r.sentDate)}</div>
+              </div>
+            ))}
+          </div>
+          {/* Desktop table */}
+          <div className="hidden sm:block overflow-x-auto">
             <table className="w-full text-left text-xs border-collapse">
               <thead>
                 <tr className="bg-slate-50 border-b border-[#E2E8F0] text-[#64748B] font-extrabold uppercase tracking-wider text-[9px]">
@@ -331,7 +375,27 @@ function EstimatesSentTable({ records, emptyLabel }: { records: OutstandingRecor
         <div className="py-8 text-center text-xs text-slate-400 font-semibold">No results for "{search}"</div>
       ) : (
         <>
-          <div className="overflow-x-auto">
+          {/* Mobile cards */}
+          <div className="sm:hidden divide-y divide-slate-100">
+            {pageRows.map(r => (
+              <div key={r.id} className="p-4 space-y-1.5">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <span className="font-semibold text-slate-800 text-xs block">{r.contactName}</span>
+                    {r.contactEmail && <span className="text-[9px] text-slate-400 font-mono truncate block">{r.contactEmail}</span>}
+                  </div>
+                  <StatusPill status={r.status} />
+                </div>
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-slate-500 font-mono text-[10px]">#{r.number || '—'}</span>
+                  <span className="font-mono font-bold text-slate-800">{fmt$(r.amount)}</span>
+                </div>
+                <div className="text-[10px] text-slate-400">Sent: {fmtSentDate(r.sentDate)}</div>
+              </div>
+            ))}
+          </div>
+          {/* Desktop table */}
+          <div className="hidden sm:block overflow-x-auto">
             <table className="w-full text-left text-xs border-collapse">
               <thead>
                 <tr className="bg-slate-50 border-b border-[#E2E8F0] text-[#64748B] font-extrabold uppercase tracking-wider text-[9px]">
@@ -553,13 +617,13 @@ export default function EstimatesInvoicesDashboardView({ reportData, outstanding
               { label: 'Overdue 60+ Days', value: fmt$(invoices.aging.days61plus.value), sub: `${invoices.aging.days61plus.count} invoices`, icon: AlertTriangle, color: 'text-rose-700', iconBg: 'bg-rose-50 text-rose-600 border-rose-100' },
               { label: 'Avg Invoice',      value: fmt$(invoices.avgInvoiceValue),   sub: 'non-draft/cancelled',                     icon: TrendingUp,    color: 'text-slate-700', iconBg: 'bg-slate-50 text-slate-600 border-slate-100' },
             ].map(card => (
-              <div key={card.label} className="bg-white border border-[#E2E8F0] shadow-sm rounded-xl p-5 flex items-start gap-3">
-                <div className={`p-2.5 rounded-xl border shrink-0 ${card.iconBg}`}>
-                  <card.icon className="w-5 h-5" />
+              <div key={card.label} className="bg-white border border-[#E2E8F0] shadow-sm rounded-xl p-3 sm:p-5 flex items-start gap-2 sm:gap-3">
+                <div className={`p-2 sm:p-2.5 rounded-xl border shrink-0 ${card.iconBg}`}>
+                  <card.icon className="w-4 h-4 sm:w-5 sm:h-5" />
                 </div>
-                <div className="min-w-0">
-                  <span className="text-[10px] uppercase font-bold tracking-widest text-[#64748B] block mb-0.5">{card.label}</span>
-                  <p className={`text-2xl font-black leading-none ${card.color}`}>{card.value}</p>
+                <div className="min-w-0 flex-1">
+                  <span className="text-[9px] sm:text-[10px] uppercase font-bold tracking-widest text-[#64748B] block mb-0.5 leading-tight">{card.label}</span>
+                  <p className={`text-lg sm:text-2xl font-black leading-none truncate ${card.color}`}>{card.value}</p>
                   <p className="text-[10px] text-slate-500 font-semibold mt-1">{card.sub}</p>
                 </div>
               </div>
@@ -777,13 +841,13 @@ export default function EstimatesInvoicesDashboardView({ reportData, outstanding
               { label: '→ Invoice Rate', value: pct(estimates.funnel.conversionRate), sub: `${estimates.funnel.converted} converted`, icon: ArrowRight,  color: 'text-cyan-700',    iconBg: 'bg-cyan-50 text-cyan-600 border-cyan-100' },
               { label: 'Rejected',       value: estimates.funnel.rejected,            sub: pct(estimates.funnel.rejectionRate),icon: XCircle,      color: 'text-rose-700',    iconBg: 'bg-rose-50 text-rose-600 border-rose-100' },
             ].map(card => (
-              <div key={card.label} className="bg-white border border-[#E2E8F0] shadow-sm rounded-xl p-5 flex items-start gap-3">
-                <div className={`p-2.5 rounded-xl border shrink-0 ${card.iconBg}`}>
-                  <card.icon className="w-5 h-5" />
+              <div key={card.label} className="bg-white border border-[#E2E8F0] shadow-sm rounded-xl p-3 sm:p-5 flex items-start gap-2 sm:gap-3">
+                <div className={`p-2 sm:p-2.5 rounded-xl border shrink-0 ${card.iconBg}`}>
+                  <card.icon className="w-4 h-4 sm:w-5 sm:h-5" />
                 </div>
-                <div className="min-w-0">
-                  <span className="text-[10px] uppercase font-bold tracking-widest text-[#64748B] block mb-0.5">{card.label}</span>
-                  <p className={`text-2xl font-black leading-none ${card.color}`}>{card.value}</p>
+                <div className="min-w-0 flex-1">
+                  <span className="text-[9px] sm:text-[10px] uppercase font-bold tracking-widest text-[#64748B] block mb-0.5 leading-tight">{card.label}</span>
+                  <p className={`text-lg sm:text-2xl font-black leading-none truncate ${card.color}`}>{card.value}</p>
                   <p className="text-[10px] text-slate-500 font-semibold mt-1">{card.sub}</p>
                 </div>
               </div>

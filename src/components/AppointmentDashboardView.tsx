@@ -134,7 +134,7 @@ export default function AppointmentDashboardView({ reportData }: AppointmentDash
     <div className="space-y-6" id="appointment-dashboard-view">
 
       {/* KPI Cards Row */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4" id="apt-kpi-cards">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4" id="apt-kpi-cards">
         {kpiCards.map(card => (
           <div key={card.label} className="bg-white border border-[#E2E8F0] shadow-sm rounded-xl p-5 flex items-start gap-3">
             <div className={`p-2.5 rounded-xl border shrink-0 ${card.iconBg}`}>
@@ -248,7 +248,51 @@ export default function AppointmentDashboardView({ reportData }: AppointmentDash
           </div>
         </div>
 
-        <div className="overflow-x-auto">
+        {/* Mobile cards */}
+        <div className="sm:hidden divide-y divide-slate-100">
+          {activeTab === 'calendars' ? (
+            calendarBreakdown.length === 0 ? (
+              <p className="text-center py-8 text-xs text-slate-400 font-semibold">No calendar data available for this period</p>
+            ) : (
+              calendarBreakdown.map(cal => (
+                <div key={cal.calendarId} className="p-4 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-xs text-[#0F172A]">{cal.calendarName}</span>
+                    <ShowRateBadge rate={cal.showRate} />
+                  </div>
+                  <div className="grid grid-cols-4 gap-1 text-[11px]">
+                    <div className="text-center"><span className="block text-[9px] uppercase font-extrabold text-slate-400 tracking-wider">Total</span><span className="font-black text-slate-700">{cal.total}</span></div>
+                    <div className="text-center"><span className="block text-[9px] uppercase font-extrabold text-emerald-400 tracking-wider">Showed</span><span className="font-bold text-emerald-700">{cal.showed}</span></div>
+                    <div className="text-center"><span className="block text-[9px] uppercase font-extrabold text-rose-400 tracking-wider">No-Show</span><span className="font-bold text-rose-700">{cal.noshow}</span></div>
+                    <div className="text-center"><span className="block text-[9px] uppercase font-extrabold text-amber-400 tracking-wider">Cancelled</span><span className="font-bold text-amber-700">{cal.cancelled}</span></div>
+                  </div>
+                </div>
+              ))
+            )
+          ) : (
+            repBreakdown.length === 0 ? (
+              <p className="text-center py-8 text-xs text-slate-400 font-semibold">No rep breakdown available — GHL_COMPANY_ID may not be configured</p>
+            ) : (
+              repBreakdown.sort((a, b) => b.booked - a.booked).map(rep => (
+                <div key={rep.userId} className="p-4 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-xs text-[#0F172A]">{rep.userName}</span>
+                    <ShowRateBadge rate={rep.showRate} />
+                  </div>
+                  <div className="grid grid-cols-4 gap-1 text-[11px]">
+                    <div className="text-center"><span className="block text-[9px] uppercase font-extrabold text-slate-400 tracking-wider">Total</span><span className="font-black text-slate-700">{rep.booked}</span></div>
+                    <div className="text-center"><span className="block text-[9px] uppercase font-extrabold text-emerald-400 tracking-wider">Showed</span><span className="font-bold text-emerald-700">{rep.showed}</span></div>
+                    <div className="text-center"><span className="block text-[9px] uppercase font-extrabold text-rose-400 tracking-wider">No-Show</span><span className="font-bold text-rose-700">{rep.noshow}</span></div>
+                    <div className="text-center"><span className="block text-[9px] uppercase font-extrabold text-amber-400 tracking-wider">Cancelled</span><span className="font-bold text-amber-700">{rep.cancelled}</span></div>
+                  </div>
+                </div>
+              ))
+            )
+          )}
+        </div>
+
+        {/* Desktop table */}
+        <div className="hidden sm:block overflow-x-auto">
           <table className="w-full text-xs">
             <thead>
               <tr className="bg-[#F8FAFC] border-b border-slate-100">

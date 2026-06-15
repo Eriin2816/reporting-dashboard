@@ -109,14 +109,18 @@ export default function SaaSAuthLayer({ children }: SaaSAuthLayerProps) {
             setPage('onboarding');
           }
         } else {
+          // Server responded OK but explicitly rejected the token
           logout();
         }
-      } else {
+      } else if (response.status === 401 || response.status === 403) {
+        // Definitive auth rejection — token is invalid or revoked
         logout();
       }
+      // 5xx / service errors are transient — do NOT logout.
+      // The stored token may still be valid; let the user retry.
     } catch (err) {
-      console.error('Session verify failed: ', err);
-      logout();
+      // Network error (fetch threw) — not an auth failure, keep stored token.
+      console.warn('[verifySession] Network error, keeping session:', err);
     } finally {
       setLoading(false);
     }
@@ -626,7 +630,7 @@ export default function SaaSAuthLayer({ children }: SaaSAuthLayerProps) {
                 {/* Subscriptions tier choosing */}
                 <div className="space-y-2">
                   <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest block">Choose SaaS tier (Mock checkout)</span>
-                  <div className="grid grid-cols-3 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     {[
                       { id: 'starter', name: 'Starter Plan', cost: '$99/mo', value: '1 Active GHL Subaccount' },
                       { id: 'growth', name: 'Growth Scale', cost: '$249/mo', value: '3 Active GHL Subaccounts' },
